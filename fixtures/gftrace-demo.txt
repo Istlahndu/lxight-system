@@ -1,0 +1,11 @@
+run d0-frozen-fixture slots 0 1 freq 1000000000 dies 1 domains 1
+data_origin synthetic
+stage 0 gemm
+stage 1 norm
+layer 0 gemm software_demo
+frame 0 counting 1 parts 1 tokens 1
+# The following category extension is a frozen importer-fixture declaration, not universal GFTRACE semantics.
+category 1 mat
+category 13 vec
+category 15 unknown
+category 21 vec

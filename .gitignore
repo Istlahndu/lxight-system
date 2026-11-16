@@ -1,0 +1,41 @@
+# Local captures, experiment notes, reports, logs and release outputs.
+/artifacts/
+/local/
+/SHA256SUMS.json
+
+# Python environments and caches.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# Build outputs and recorded sessions.
+/build/
+/dist/
+*.exe
+*.o
+*.obj
+*.so
+*.dll
+*.a
+*.lib
+*.zip
+*.tar.gz
+*.lxtrace
+*.lxtrace/
+*.capture/
+*.log
+
+# Local configuration and credentials.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

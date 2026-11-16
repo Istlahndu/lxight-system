@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0-demo",
+  "requirements_baseline": "SRS-v0.12-20261115",
+  "release_kind": "development_demo",
+  "schema_version": "lxtrace.resource-session.v2",
+  "H1": {"status":"blocked","reasons":["continuous_scheduler_collector_service_not_integrated","trusted_job_authorization_not_integrated","core_hardware_source_semantics_not_validated","full_domain_live_capture_not_validated","mature_engine_not_validated"]},
+  "H2": {"status":"blocked","reasons":["verified_hardware_compute_activity_source_missing","verified_device_transfer_activity_source_missing","cross_source_calibration_and_reference_missing"]},
+  "supported_real_boundaries": ["OS context-switch residency from explicitly imported supported switch stream; producer evidence required"],
+  "windows_samples": ["own-launch user-task cycles/instructions windows when perf_event_open allowed","own-launch proc thread CPU samples retaining cumulative utime/stime tick fields; no tick-delta windows"],
+  "software_semantics": ["optional historical C/C++ SDK and GFTRACE import; remains software"],
+  "unavailable_or_pending": ["live continuous scheduling","trusted attach","matrix/vector/memory/frontend hardware busy boundaries","true DMA/NIC transfer intervals","hardware compute-transfer overlap","mature inference engine semantic plugin","full domain and 608 CPU live scale","10^7 event performance acceptance"],
+  "fixture_policy": "All built-in cases are synthetic and validate math/UI only.",
+  "isolation": "Public-account server project operations, builds, temporary files and outputs remain under lkn_workspace. No system policy modifications."
+}

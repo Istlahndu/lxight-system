@@ -1,0 +1,6 @@
+{
+  "profile": "resource",
+  "required_sources": ["schedule", "core_pmu"],
+  "optional_sources": ["task_pmu", "spe", "device_transfer"],
+  "description": "Strict resource capture; required sources must pass before launching the workload."
+}

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>LX2 Trace · 线程语义分析</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+  <a class="brand" href="#" aria-label="LX2 Trace 首页"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><b>LX2 <span>TRACE</span></b></a>
+  <span class="header-divider"></span><span class="edition">性能分析工作台 <span class="badge">D0</span></span>
+  <div class="header-right"><span class="offline-state"><i></i> 离线优先 · 用户态</span><button id="helpButton" class="button quiet" title="查看使用帮助">使用帮助</button><button id="importButton" class="button primary"><span>↥</span> 导入会话</button></div>
+  <input type="file" id="fileInput" accept=".json,.lxtrace" hidden>
+</header>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="nav-label">工作区</div>
+    <button class="nav-item active" id="timelineNav"><span class="nav-symbol">▤</span> 时间线分析 <span class="nav-count" id="navCount">—</span></button>
+    <button class="nav-item" id="qualityNav"><span class="nav-symbol">◈</span> 证据与能力</button>
+    <div class="sidebar-rule"></div>
+    <div class="nav-label side-title">逻辑线程 <button id="allThreads" class="text-button">全选</button></div>
+    <div class="thread-search"><span>⌕</span><input id="threadSearch" placeholder="筛选线程 / TID" aria-label="筛选线程"></div>
+    <div id="threadList" class="thread-list"></div>
+    <div class="sidebar-note"><span class="note-symbol">ⓘ</span><p>按进程与线程组织轨道。<br>物理核驻留：<b>unavailable</b></p></div>
+    <div class="sidebar-footer"><span class="tiny-dot"></span> LX2 Trace <span>0.1.0</span></div>
+  </aside>
+  <main class="main">
+    <div class="page-heading"><div><div class="breadcrumb">分析工作区 <span>/</span> <span id="sessionCrumb">未载入会话</span></div><h1>线程语义流水线 <span class="title-tag">APPLICATION TIMELINE</span></h1><p>关联帧、算子、显式交换与等待，查看软件范围在时间上的并存关系。</p></div><button id="downloadSession" class="button" disabled>↓ 会话包</button></div>
+    <section class="session-strip"><span class="session-icon">▧</span><div><strong id="sessionName">导入一个会话，开始分析</strong><span id="sessionMeta">支持 lxtrace.session.v1 · 所有分析均在本机完成</span></div><span id="originTag" class="origin-tag">未载入</span><span id="qualitySummary" class="quality-pill">等待数据</span></section>
+    <div id="emptyState" class="empty-state"><div class="empty-glyph">▥</div><h2>让线程流水线变得可见</h2><p>导入 SDK 采集或 GFTRACE 归一化后的会话包。<br>会话保留来源、能力和缺失信息。</p><button id="emptyImport" class="button primary">导入 .lxtrace / .json</button><span>也可将会话文件拖入页面</span></div>
+    <div id="workspace" hidden>
+      <section class="metric-grid" aria-label="选区统计">
+        <div class="metric"><span>选区墙钟跨度 <i>W</i></span><strong id="metricWall">—</strong><small id="selectionCaption">全部会话</small></div>
+        <div class="metric"><span>计算语义并集 <i>C_sem</i></span><strong id="metricCompute">—</strong><small>同线程扣除显式等待 / 交换</small></div>
+        <div class="metric accent"><span>请求生命周期重叠 <i>C ∩ R</i></span><strong id="metricOverlap">—</strong><small id="metricRatio">请求生命周期覆盖率 —</small></div>
+        <div class="metric"><span>数据完整性 <i>QUALITY</i></span><strong id="metricQuality" class="quality-number">—</strong><small id="metricQualityNote">已闭合与未闭合范围分别处理</small></div>
+      </section>
+      <section class="trace-panel" id="tracePanel">
+        <div class="panel-heading"><div><h2>时间线</h2><span id="viewportCaption">—</span></div><div class="timeline-actions"><button id="panLeft" class="icon-button" title="向前平移">←</button><button id="zoomOut" class="icon-button" title="缩小">−</button><button id="zoomIn" class="icon-button" title="放大">＋</button><button id="panRight" class="icon-button" title="向后平移">→</button><button id="fitView" class="button compact" title="查看全部 (F)">全览</button><span class="toolbar-separator"></span><input id="search" class="event-search" placeholder="⌕ 搜索算子、帧、请求…" aria-label="搜索事件"><span id="searchCount" class="search-count"></span><button id="prevMatch" class="icon-button" title="上一个结果">↑</button><button id="nextMatch" class="icon-button" title="下一个结果">↓</button></div></div>
+        <div class="selection-toolbar"><span class="selection-symbol">▣</span><b>选区</b><label>从 <input id="selectionFrom" type="number" step="any" aria-label="选区开始毫秒"> ms</label><span class="range-dash">—</span><label>到 <input id="selectionTo" type="number" step="any" aria-label="选区结束毫秒"> ms</label><button id="applySelection" class="button compact">应用</button><button id="clearSelection" class="text-button">重置</button><select id="frameFilter" class="track-display" aria-label="帧筛选" title="仅显示并统计选中的应用帧"><option value="all" selected>全部帧</option></select><select id="trackDisplay" class="track-display" aria-label="轨道显示" title="轨道显示不改变统计；统计仍按选区与线程筛选计算"><option value="all" selected>全部轨道</option><option value="frame">帧内类别轨道</option><option value="compute">计算轨道</option></select><span class="selection-hint">拖动框选 · Shift + 拖动平移 · 滚轮缩放</span></div>
+        <div id="bindingNote" class="binding-note" hidden></div>
+        <div class="canvas-scroll" id="timelineScroll"><div id="canvasSpace" class="canvas-space"><canvas id="timelineCanvas" aria-label="交互式线程时间线" tabindex="0"></canvas></div></div>
+        <div class="timeline-footer"><div class="legend"><span><i style="--c:var(--mat)"></i>矩阵</span><span><i style="--c:var(--vec)"></i>向量 / 标量</span><span><i style="--c:var(--cx)"></i>交换 API</span><span><i class="request-swatch"></i>请求生命周期</span><span><i style="--c:var(--wait)"></i>等待</span><span><i style="--c:var(--drv)"></i>驱动调用外</span><span><i class="overlap-swatch"></i>计算 ∩ 请求</span><span><i class="parallel-swatch"></i>计算线程并行</span><span><i class="open-swatch"></i>未闭合</span></div><span id="eventCount">—</span></div>
+        <p class="timeline-evidence-note">顶部两条摘要与下方泳道使用同一时间轴：青色表示计算与请求生命周期重叠，蓝色表示至少两个不同线程的计算软件范围同时存在。选择“帧内类别轨道”后，每个 frame 的矩阵、向量/标量、显式交换、等待等已观测区间分别成行；它们均不代表连续 on-CPU 或硬件 busy；交换 API 条是调用经过时间，未测量连续物理传输。</p>
+      </section>
+      <section class="frame-interval-panel" id="frameIntervals"><div class="section-heading"><h2>已观测区间</h2><span class="subtle-label" id="frameIntervalCaption">—</span></div><p class="timeline-evidence-note" id="frameIntervalNote">会话起止使用同一时间轴，帧内起止以所属帧开始为 0。每条保留原始边界；点击事件定位。矩阵/向量条是软件函数范围，其中仍可能包含访存、分支或调度等待。没有证据的类别不生成区间，各行可重叠。</p><div class="frame-interval-scroll"><table class="data-table frame-interval-table"><thead><tr><th>类别 / 事件</th><th>所属帧 / 线程</th><th>会话起点 ms</th><th>会话终点 ms</th><th>帧内起点 ms</th><th>帧内终点 ms</th><th>耗时 ms</th><th>来源 / 依据</th></tr></thead><tbody id="frameIntervalRows"></tbody></table></div></section>
+      <div class="analysis-grid">
+        <section class="analysis-panel"><div class="section-heading"><h2>选区分析</h2><span class="subtle-label">半开区间 [t₀, t₁)</span><div class="export-actions"><button id="exportJson" class="button compact">JSON</button><button id="exportCsv" class="button compact">CSV</button><button id="exportTrace" class="button compact">Trace Event</button><button id="exportHtml" class="button compact">离线 HTML</button></div></div><div class="overlap-equation"><span class="equation-key">C_sem</span><div class="equation-line compute-line"><span id="computeBar"></span></div><strong id="analysisCompute">—</strong><span class="equation-key">R</span><div class="equation-line request-line"><span id="requestBar"></span></div><strong id="analysisRequest">—</strong><span class="equation-key overlap-key">C ∩ R</span><div class="equation-line overlap-line"><span id="overlapBar"></span></div><strong id="analysisOverlap">—</strong></div><div class="ratio-grid"><span>请求重叠率 <b id="requestRatio">—</b></span><span>计算覆盖率 <b id="computeRatio">—</b></span><span>显式等待并集 <b id="waitValue">—</b></span></div><div class="interpretation"><span>ⓘ</span><div id="analysisWarnings"></div></div></section>
+        <section class="detail-panel"><div class="section-heading"><h2>事件详情</h2><span id="eventEvidence" class="observed-tag" hidden>observed</span></div><div id="eventDetail" class="detail-empty"><span>↖</span><p>点击时间线上的范围<br>查看属性、层级与关联请求</p></div></section>
+      </div>
+      <section id="capabilityPanel" class="capability-panel"><div class="section-heading"><h2>证据与能力</h2><span class="subtle-label">D0 用户态边界</span><button id="toggleCapabilities" class="text-button">展开详情</button></div><div class="capability-summary"><span><i class="tiny-dot"></i> 应用标注 · observed</span><span>调度 / 核驻留 · unavailable</span><span>硬件归因 / 实际传输 · unavailable</span><span id="clockSummary">—</span></div><div id="capabilityDetails" hidden><p class="timeline-evidence-note" id="capabilityScopeNote">以下按全会话实际记录显示八类证据状态；软件范围与硬件归因不是同一口径，不能把这些卡片相加成互斥的八类耗时。</p><div id="diagnosticGrid" class="diagnostic-grid"></div><div class="capability-table-wrap"><table class="data-table"><thead><tr><th>能力 / Feature</th><th>状态</th><th>依据与边界</th></tr></thead><tbody id="capabilityTable"></tbody></table></div><div class="metadata-grid"><div><h3>数据质量</h3><pre id="qualityData"></pre></div><div><h3>来源与时钟</h3><pre id="provenanceData"></pre></div><div><h3>拓扑与分配</h3><pre id="topologyData"></pre></div></div></div></section>
+      <footer class="main-footer"><span>LX2 Trace · D0 用户态 Demo</span><span>软件意图 ≠ 执行单元 busy · 请求在途 ≠ 真实传输</span></footer>
+    </div>
+  </main>
+</div>
+<div id="tooltip" class="tooltip" hidden></div>
+<div id="toast" class="toast" role="status" hidden></div>
+<dialog id="helpDialog"><div class="dialog-heading"><h2>分析工作台使用帮助</h2><button id="closeHelp" class="icon-button" aria-label="关闭帮助">×</button></div><p>导入版本化会话包后，按线程查看帧、算子、显式交换与等待。应用标注代表软件意图；本 Demo 不重建逐核驻留或硬件 busy。</p><dl class="help-list"><dt>选区</dt><dd>在时间线上拖动，或输入起止毫秒；点击帧 / 事件后可把它设为选区。</dd><dt>帧筛选</dt><dd>选择一个应用 frame 后，时间线与统计只保留该 frame；“全部帧”用于观察流水线并发。</dd><dt>轨道显示</dt><dd>“帧内类别轨道”按 frame 和类别拆行；“计算轨道”仅隐藏非计算范围。统计仍按选区、线程和帧筛选计算。</dd><dt>缩放 / 平移</dt><dd>使用 ＋ / − 或滚轮缩放，Shift + 拖动平移；F 全览，Esc 清除高亮。</dd><dt>检索与关联</dt><dd>搜索算子 / 帧 / 请求，↑ / ↓ 跳转结果。点击范围查看父子事件、等待对象及提交到完成的 flow。</dd><dt>统计与缺失</dt><dd>先在每线程扣除等待 / 交换，再取计算并集。未闭合事件保持 end_ts=null，不纳入精确耗时。缺失时比例为 N/A。</dd><dt>离线导出</dt><dd>JSON / CSV 导出当前选区与父级上下文。Trace Event 用于兼容查看器；原生会话保留完整能力、质量和来源信息。</dd></dl></dialog>
+<!--LXTRACE_SESSION-->
+<script src="analysis.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>

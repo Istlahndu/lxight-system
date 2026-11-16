@@ -1,0 +1,34 @@
+LX2 Trace D0 implementation contract (2026-11-14)
+No npm/pip dependencies. Python 3.9+ CLI; C++11 SDK; HTML/CSS/vanilla JS offline canvas viewer.
+session JSON:
+schema_version="lxtrace.session.v1", session_id, data_origin="application"|"imported"|"synthetic",
+execution_mode="user_only", app={name,build_id,workload_config}, clock={id,unit:"ns",origin_ns,resolution_ns},
+time_range=[0,end_ns], threads=[{thread_id:string,pid,tid,name,role}], events=[event],
+capability_manifest=[{feature_id,availability,reason_code,...}], topology={}, sources=[], quality={}, provenance=[].
+event: event_id:string, thread_id:string, pid, tid, kind="frame"|"range"|"wait"|"exchange"|"request"|"instant"|"counter"|"driver_outside",
+category="mat"|"vec"|"cc"|"cx"|"wait"|"drv"|"unknown", name, begin_ts:int ns relative, end_ts:int|null,
+parent_id:string|null, frame_id:string|null, status="complete"|"incomplete", source_id, evidence="observed", args:{}.
+requests are separate events kind=request/category=cx. args: request_id,peer,bytes,completion_tid,submit_uncertainty_ns,completion_uncertainty_ns.
+No hardware timelines. Eight classes retain unavailable markers. No CPU residency inferred.
+frame args.driver_calls_complete=true is explicit declaration; only derive driver_outside in complete frames on frame_driver threads with no loss/incomplete calls.
+Sources last reliable timestamp does NOT prove an open prefix. Open events excluded from exact durations and overlap; metrics disclose unknown.
+Compute categories mat/vec/cc only for range events. Compute union per thread minus wait and exchange, THEN union threads. Requests union globally.
+Query returns interval, wall_ns, compute_raw_ns, compute_ns, request_ns, overlap_ns, request_overlap_ratio, compute_overlap_ratio, wait_ns, incomplete_count, exclusion_coverage, warnings; own-wall event stats exclude same-thread child interval unions.
+compute_parallel_ns and intervals.parallel: union of wall intervals with at least two distinct threads' compute ranges after same-thread wait/exchange exclusion. Nested ranges on one thread count once. No request required; this differs from compute/request overlap. Loss/protocol errors invalidate the confirmed lower bound. Never interpret as continuous CPU residency.
+Time half open. Filter thread IDs before per-thread exclusion; request IDs filter separately if needed. Numeric ms UI converts to ns.
+Optional analysis selectors frame_ids and operator_ids are applied before all statistics and same-thread exclusion. frame_ids accepts normalized frame event IDs or explicit args.application_frame_id labels, resolved to matching frames. Membership is event.frame_id or explicit frame metadata, never inferred from timestamp proximity. operator_ids matches operator_id/operator/operator_instance_id on an event or its owning frame. A frame selector is not an arbitrary event-ID selector. CLI analyze exposes repeatable --frame and --operator options.
+Frame metadata may include frame_kind, microbatch, layer, operator_id, frame_group, and parent_application_frame_id. The SDK importer resolves the last field only when it names one unique application frame and no parent is already present; cross-thread parentage does not imply same-thread inclusive/self duration.
+Raw SDK JSONL:
+{"type":"meta","schema_version":"lxtrace.sdk.v1","clock_id":"CLOCK_MONOTONIC","build_id":...,"app_name":...}
+{"type":"thread","thread_id":...,"pid":int,"tid":int,"name":...,"role":...}
+{"type":"begin","event_id":string,"thread_id":...,"pid":int,"tid":int,"kind":...,"category":...,"name":...,"ts":absolute ns,"parent_id":null|string,"frame_id":null|string,"args":{}}
+{"type":"end","event_id":string,"ts":absolute ns,"tid":int} ; requests may close cross thread.
+{"type":"instant"|"counter", ...event-like...,"ts":absolute ns,"args":{}}
+{"type":"quality","dropped_records":int,"protocol_errors":int,"clean_shutdown":bool,"capacity":int}
+SDK SDK-side output path LXTRACE_OUTPUT; record command creates own raw path. LXTRACE_DISABLED=1 yields no-op.
+SDK lx_frame_begin_ex(frame_id,driver_calls_complete,args_json) adds caller JSON-object metadata while preserving lx_frame_begin source compatibility. application_frame_id, driver_calls_complete, frame_boundary, and wait_annotation_coverage are reserved: the SDK-generated values take precedence. Metadata plus reserved fields must fit the 767-byte record args limit. Nested synchronous frames restore the enclosing frame when closed; ranges restore the frame active when they began.
+SDK lx_context_capture / lx_context_attach copy explicit frame membership with executor tasks within one process. The context contains a process ID and a recorded frame handle; attach rejects a foreign-process or non-frame handle when capture is enabled, and returns the previous context for restoration. Restore after all synchronous child scopes close. C++ lxtrace::ContextScope and lxtrace::Frame provide RAII. A producer frame may close before asynchronous work completes; context membership never fabricates a longer parent execution interval or hardware activity.
+All software category ranges are observed annotated wall intervals. A mat/vec/cc label describes the operation under observation, not continuous matrix/vector-unit occupancy, physical-core residency, hidden memory stalls, or hardware interconnect activity. Unavailable hardware categories stay unavailable; no percentage is expanded into invented begin/end intervals.
+Viewer files index.html/style.css/viewer.js/analysis.js. index has marker <!--LXTRACE_SESSION--> for self-contained report embedding; viewer starts from window.LXTRACE_SESSION or fetch('./demo-session.json') only when HTTP; also accepts file upload. analysis.js exports global LXAnalysis={analyze,union,subtract,intersection} plus CommonJS for tests. viewer calls LXAnalysis.analyze(session,start_ns,end_ns,{thread_ids:[...]}) and own-wall optionally.
+CLI writes artifacts demo-session.json and copies web files to artifacts/viewer; report inlines scripts/css and escapes JSON < and U+2028/U+2029. All labels via textContent/canvas fillText, never raw innerHTML interpolation.
+Ownership: root Python core/CLI/docs/deploy; SDK agent sdk/* examples/* lxtrace/importers.py fixtures/gftrace*; viewer agent web/*; audit agent tests/test_analysis.py tests/test_acceptance.py. Coordinate contract changes before edits outside owned files.

@@ -1,0 +1,31 @@
+LX2 Profiler v0.2.0-demo / SRS v0.12 / 2026-11-15
+
+The primary model is physical resources and source evidence. The legacy SDK is
+an optional software-semantic branch, retained under legacy_web and legacy CLI.
+
+Source evidence is typed as OS residency, hardware activity, counter window,
+sample or aggregate. These types never imply one another. All built-in fixtures
+are synthetic. Live own-launch sampling/counters are labeled live and preserve
+raw input, scope, clocks, uncertainty and missing sources.
+
+The strict resource profile fails before starting the workload when any required
+source is unavailable. proc-sample and task-pmu are separate explicitly selected
+profiles; neither passes H1. Shared UID or user-supplied job/PID never authorizes
+attach. No privileged service or trusted job integration is installed by this
+demo. There are no sudo, sysctl, setuid or global permission changes.
+
+Unknown scheduling capacity remains unknown. Affinity does not prove allocation
+or residency. End=null stays incomplete. PMU windows are not prorated across a
+query. Samples are points. Shared counters count once. Hardware overlap requires
+verified compute and transfer boundaries with valid source clocks and scope.
+
+Release status: development demo, H1 blocked, H2 blocked. Full-domain live capture,
+mature inference engine integration, real hardware category boundaries, hardware
+compute-transfer overlap, full-scale performance and overhead budgets remain
+unverified. See support-contract.v2.json and README.md for the current support
+contract; artifacts/v2 contains code, fixture, browser and real server evidence.
+
+All server project operations, build files, temporary files and outputs stay
+within the configured project workspace (under lkn_workspace on shared servers).
+V1 deployment is retained separately.
+The previous D0 contract is preserved at docs/legacy-v1-contract.txt.

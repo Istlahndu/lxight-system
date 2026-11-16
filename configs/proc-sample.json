@@ -1,0 +1,6 @@
+{
+  "profile": "proc-sample",
+  "required_sources": ["proc_sample"],
+  "sample_interval_ms": 10,
+  "description": "Own launch only. Discrete thread/CPU samples retaining cumulative utime/stime tick fields at each sample point; no continuous CPU residency or tick-delta windows."
+}

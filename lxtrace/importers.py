@@ -1,0 +1,371 @@
+"""Loss-aware SDK JSONL and frozen GFTRACE1 importers. No third-party packages.
+
+GFTRACE1 support is exactly the little-endian layout in gf_trace.h (2026-11-14
+local source). Its slot coordinates remain logical labels without an explicit,
+verified mapping. PUSH/SUB are API ranges, never fabricated async requests.
+"""
+import hashlib
+import json
+import struct
+from pathlib import Path
+
+
+def _digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _base(path, origin, clock, data_origin):
+    digest = _digest(path)
+    return {
+        "schema_version": "lxtrace.session.v1", "session_id": digest[:24],
+        "data_origin": data_origin, "execution_mode": "user_only",
+        "clock": {"id": clock, "unit": "ns", "origin_ns": origin,
+                  "resolution_ns": None, "calibration_error_ns": None},
+        "time_range": [0, 0], "threads": [], "events": [],
+        "capability_manifest": [], "topology": {"mapping_status": "unknown"},
+        "sources": [], "quality": {}, "app": {},
+        "provenance": [{"filename": Path(path).name, "sha256": digest,
+                        "importer_version": "lxtrace-d0.1"}],
+    }
+
+
+def _integer(value, label):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("invalid nonnegative integer " + label)
+    return value
+
+
+def load_sdk(path):
+    """Read lxtrace.sdk.v1 JSONL; only observed, matched ends close events."""
+    path = Path(path)
+    rows, parse_errors = [], []
+    with path.open(encoding="utf-8") as f:
+        for line_no, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("record is not an object")
+                rows.append(row)
+            except (ValueError, json.JSONDecodeError):
+                parse_errors.append("invalid JSON record at line %d" % line_no)
+    metas = [r for r in rows if r.get("type") == "meta"]
+    if not metas or metas[0].get("schema_version") != "lxtrace.sdk.v1":
+        raise ValueError("missing supported lxtrace.sdk.v1 header")
+    meta = metas[0]
+    stamps = [_integer(r["ts"], "ts") for r in rows if "ts" in r]
+    origin = min(stamps, default=0)
+    session = _base(path, origin, meta.get("clock_id", "unknown"), "application")
+    session["app"] = {"name": meta.get("app_name", "unknown"),
+                      "build_id": meta.get("build_id", "unknown"),
+                      "workload_config": {"frame_definition": "application-defined"}}
+    threads, events, order, stacks = {}, {}, [], {}
+    quality = {"dropped_records": 0, "protocol_errors": len(parse_errors), "clean_shutdown": False,
+               "warnings": parse_errors, "wait_annotation_coverage": "unknown"}
+    last = 0
+    for row in rows:
+        typ = row.get("type")
+        if typ == "thread":
+            th = str(row["thread_id"])
+            threads[th] = {k: row.get(k) for k in ("pid", "tid", "name", "role")}
+            threads[th]["thread_id"] = th
+        elif typ in ("begin", "instant", "counter"):
+            eid, th = str(row["event_id"]), str(row["thread_id"])
+            if eid in events:
+                quality["protocol_errors"] += 1
+                continue
+            ts = _integer(row["ts"], "ts") - origin
+            last = max(last, ts)
+            kind = row.get("kind", "range") if typ == "begin" else typ
+            args = row.get("args", {})
+            if not isinstance(args, dict):
+                args = {"invalid_args": True}
+                quality["protocol_errors"] += 1
+            e = {"event_id": eid, "thread_id": th, "pid": row.get("pid"),
+                 "tid": row.get("tid"), "kind": kind,
+                 "category": row.get("category", "unknown"), "name": str(row.get("name", kind)),
+                 "begin_ts": ts, "end_ts": None if typ == "begin" else ts,
+                 "parent_id": row.get("parent_id"), "frame_id": row.get("frame_id"),
+                 "status": "incomplete" if typ == "begin" else "complete",
+                 "source_id": "sdk", "evidence": "observed", "args": args}
+            if kind == "request":
+                e["args"]["request_id"] = eid  # process + monotonic generation; correlation is separate
+                e["args"]["submit_boundary"] = "application_async_begin"
+                e["args"]["completion_boundary"] = "completion_observed"
+            events[eid] = e
+            order.append(eid)
+            if typ == "begin" and kind != "request":
+                stacks.setdefault(th, []).append(eid)
+            threads.setdefault(th, {"thread_id": th, "pid": e["pid"], "tid": e["tid"],
+                                    "name": th, "role": "unknown"})
+        elif typ == "end":
+            ts = _integer(row["ts"], "ts") - origin
+            last = max(last, ts)
+            e = events.get(str(row.get("event_id")))
+            if not e or e["end_ts"] is not None or ts < e["begin_ts"]:
+                quality["protocol_errors"] += 1
+                continue
+            if e["kind"] != "request" and row.get("tid") != e["tid"]:
+                quality["protocol_errors"] += 1
+                continue
+            if e["kind"] != "request":
+                stack = stacks.get(e["thread_id"], [])
+                if not stack or stack[-1] != e["event_id"]:
+                    quality["protocol_errors"] += 1
+                    continue
+                stack.pop()
+            e["end_ts"], e["status"] = ts, "complete"
+            if e["kind"] == "request":
+                e["args"]["completion_tid"] = row.get("tid")
+        elif typ == "quality":
+            quality["dropped_records"] += _integer(row.get("dropped_records", 0), "dropped_records")
+            quality["protocol_errors"] += _integer(row.get("protocol_errors", 0), "protocol_errors")
+            quality["clean_shutdown"] = row.get("clean_shutdown") is True
+            quality["capacity"] = row.get("capacity")
+    # Worker frame references must be explicit application IDs, never proximity in time.
+    frame_names = {}
+    duplicate_names = set()
+    for e in events.values():
+        name = e["args"].get("application_frame_id")
+        if e["kind"] != "frame" or name is None:
+            continue
+        if name in frame_names:
+            duplicate_names.add(name)
+        frame_names[name] = e["event_id"]
+    for name in duplicate_names:
+        frame_names.pop(name, None)
+    if duplicate_names:
+        quality["warnings"].append("duplicate application frame labels; worker association left unknown")
+    for e in events.values():
+        explicit_frame = e["args"].get("application_frame_id")
+        if not e["frame_id"] and explicit_frame is not None and explicit_frame in frame_names:
+            e["frame_id"] = frame_names[explicit_frame]
+        # A worker frame can be opened on another thread than its driver
+        # frame.  Preserve an explicit application-level parent relationship
+        # without guessing from clock overlap.
+        parent_label = e["args"].get("parent_application_frame_id")
+        if (not e.get("parent_id") and parent_label is not None
+                and parent_label in frame_names and e["kind"] == "frame"):
+            e["parent_id"] = frame_names[parent_label]
+    # Propagate only through explicit parent IDs (the parent may have been written
+    # later by a different source); never infer association from overlapping clocks.
+    for e in events.values():
+        if e["frame_id"]:
+            continue
+        parent, visited = events.get(str(e.get("parent_id"))), set()
+        while parent is not None and parent["event_id"] not in visited:
+            visited.add(parent["event_id"])
+            if parent.get("frame_id"):
+                e["frame_id"] = parent["frame_id"]
+                break
+            parent = events.get(str(parent.get("parent_id")))
+    session["events"] = [events[k] for k in order]
+    session["threads"] = list(threads.values())
+    quality["incomplete_events"] = sum(e["end_ts"] is None for e in session["events"])
+    quality["loss_position_known"] = False
+    quality["source_continuity"] = "unknown" if (quality["dropped_records"] or parse_errors or not quality["clean_shutdown"]) else "complete_recorded_pairs"
+    session["quality"] = quality
+    session["time_range"] = [0, last]
+    session["sources"] = [{"source_id": "sdk", "kind": "application_annotation",
+                            "last_reliable_ts": last, "open_prefix_proven": False,
+                            "clock_id": session["clock"]["id"], "resolution_ns": None,
+                            "loss": quality["dropped_records"], "capture_end_known": quality["clean_shutdown"]}]
+    return session
+
+
+GF_PAIRS = {
+    1: (2, "range", "unknown", "pool.call"),
+    3: (4, "wait", "wait", "barrier"),
+    5: (6, "wait", "wait", "cross_domain_flag_wait"),
+    7: (8, "wait", "wait", "spin"),
+    9: (10, "frame", "unknown", "frame"),
+    11: (12, "wait", "wait", "driver.input_wait"),
+    13: (14, "range", "unknown", "embedding"),
+    15: (16, "range", "unknown", "layer.call"),
+    17: (18, "wait", "wait", "driver.slot_wait"),
+    19: (20, "exchange", "cx", "push.api"),
+    21: (22, "range", "unknown", "head"),
+    23: (24, "exchange", "cx", "subexchange.api"),
+}
+
+
+def _metadata(path):
+    if path is None:
+        return {}, {}, {}
+    if isinstance(path, dict):
+        return path, {}, {}
+    p = Path(path)
+    if not p.exists():
+        raise ValueError("GFTRACE metadata does not exist: " + str(p))
+    if p.suffix.lower() == ".json":
+        return json.loads(p.read_text(encoding="utf-8")), {}, {}
+    stages, layers, categories, properties = {}, {}, {}, {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        words = line.split()
+        if len(words) >= 3 and words[0] == "run":
+            properties["run"] = words[1]
+            if "freq" in words:
+                i = words.index("freq")
+                if i + 1 < len(words):
+                    properties["frequency_hz"] = int(words[i + 1])
+        elif len(words) >= 3 and words[0] == "stage":
+            stages[int(words[1])] = words[2]
+        elif len(words) >= 3 and words[0] == "layer":
+            layers[int(words[1])] = " ".join(words[2:])
+        elif len(words) == 3 and words[0] == "category":
+            categories[int(words[1])] = words[2]
+        elif len(words) == 2 and words[0] == "data_origin":
+            properties["original_data_origin"] = words[1]
+    properties["categories"] = categories
+    return properties, stages, layers
+
+
+def load_gftrace(path, metadata=None, mapping=None):
+    path = Path(path)
+    raw = path.read_bytes()
+    if len(raw) < 24:
+        raise ValueError("truncated GFTRACE1 header")
+    magic, frequency, count, reserved = struct.unpack_from("<8sQii", raw)
+    if magic != b"GFTRACE1" or frequency <= 0 or count < 0 or count > 100000:
+        raise ValueError("invalid GFTRACE1 magic/frequency/buffer count")
+    if reserved != 0:
+        raise ValueError("unsupported GFTRACE1 reserved header field")
+    if metadata is None and path.with_suffix(".txt").exists():
+        metadata = path.with_suffix(".txt")
+    meta, stages, layers = _metadata(metadata)
+    if meta.get("frequency_hz", frequency) != frequency:
+        raise ValueError("GFTRACE1 metadata and binary clock frequency disagree")
+    mappings = mapping if isinstance(mapping, dict) else json.loads(Path(mapping).read_text(encoding="utf-8")) if mapping else {}
+    mapping_threads = mappings.get("threads", {})
+    offset, buffers, minimum, maximum = 24, [], None, 0
+    for _ in range(count):
+        if offset + 16 > len(raw):
+            raise ValueError("truncated GFTRACE1 buffer header")
+        die, domain, slot, n = struct.unpack_from("<iiii", raw, offset)
+        offset += 16
+        if n < 0 or n > (len(raw) - offset) // 16:
+            raise ValueError("truncated GFTRACE1 event buffer or invalid event count")
+        records = list(struct.iter_unpack("<QHHi", raw[offset:offset + n * 16]))
+        offset += n * 16
+        if any(records[i][0] < records[i - 1][0] for i in range(1, n)):
+            raise ValueError("GFTRACE1 timestamps decrease within a logical thread")
+        if records:
+            minimum = records[0][0] if minimum is None else min(minimum, records[0][0])
+            maximum = max(maximum, records[-1][0])
+        buffers.append((die, domain, slot, records))
+    if offset != len(raw):
+        raise ValueError("trailing bytes after GFTRACE1 buffers")
+    minimum = minimum or 0
+    origin_ns = minimum * 1000000000 // frequency
+    session = _base(path, origin_ns, "GFTRACE_GENERIC_TIMER" if frequency != 1000000000 else "GFTRACE_SOURCE_CLOCK_UNVERIFIED", "imported")
+    session["clock"].update({"original_unit": "ticks", "frequency_hz": frequency,
+                              "origin_ticks": minimum, "conversion": "(ticks-origin_ticks)*1e9//frequency",
+                              "resolution_ns": max(1, (1000000000 + frequency - 1) // frequency)})
+    session["app"] = {"name": "GFTRACE1 imported logical timeline", "build_id": "unknown", "workload_config": {}}
+    if meta.get("original_data_origin"):
+        session["original_data_origin"] = meta["original_data_origin"]
+        if meta["original_data_origin"] == "synthetic":
+            session["app"]["name"] = "GFTRACE1 imported · synthetic format fixture"
+        session["provenance"].append({"original_data_origin": meta["original_data_origin"], "fixture_only": True})
+    warnings, errors, unknown_kinds, events, threads = [], 0, 0, [], []
+    end_kinds = {v[0]: k for k, v in GF_PAIRS.items()}
+    categories = meta.get("categories", {})
+    for die, domain, slot, records in buffers:
+        key = "%d:%d:%d" % (die, domain, slot)
+        thread_key = "gf:" + key
+        declared = mapping_threads.get(key, {})
+        verified = declared.get("verified") is True
+        thread = {"thread_id": thread_key, "pid": declared.get("pid") if verified else None,
+                  "tid": declared.get("tid") if verified else None,
+                  "name": "GF logical die%s / domain%s / slot%s" % (die, domain, slot),
+                  "role": "frame_driver" if domain < 0 else "worker",
+                  "legacy_logical_slot": {"die": die, "domain": domain, "thread": slot},
+                  "physical_mapping_status": "verified" if verified else "unknown"}
+        if verified:
+            thread["static_mapping"] = {k: declared.get(k) for k in ("cpu", "package", "die", "compute_domain", "core")}
+            thread["static_mapping"]["source"] = "explicit_mapping_file; not residency"
+        threads.append(thread)
+        stack, open_by_kind, frame_id = [], {}, None
+        for index, (tick, kind, code, aux) in enumerate(records):
+            ts = (tick - minimum) * 1000000000 // frequency
+            if kind in GF_PAIRS:
+                endkind, eventkind, category, name = GF_PAIRS[kind]
+                eid = "gf:%s:%d" % (key, index)
+                if kind == 1:
+                    name += ":" + str(layers.get(code, "layer.%d" % code))
+                if kind == 9:
+                    name = "frame.%d" % aux
+                category = categories.get(str(kind), categories.get(kind, category))
+                if category not in ("mat", "vec", "cc", "cx", "wait", "drv", "unknown"):
+                    category = "unknown"
+                e = {"event_id": eid, "thread_id": thread_key, "pid": thread["pid"], "tid": thread["tid"],
+                     "kind": eventkind, "category": category, "name": name,
+                     "begin_ts": ts, "end_ts": None, "parent_id": stack[-1]["event_id"] if stack else None,
+                     "frame_id": frame_id, "status": "incomplete", "evidence": "observed", "source_id": "gftrace",
+                     "args": {"legacy_kind": kind, "code": code, "aux": aux,
+                              "raw_begin_ticks": tick, "logical_slot": key}}
+                if kind == 9:
+                    frame_id = eid
+                    e["frame_id"] = eid
+                    e["args"]["driver_calls_complete"] = False
+                if eventkind == "wait":
+                    e["args"]["wait_object"] = stages.get(code, "site.%d" % code)
+                if kind in open_by_kind:
+                    errors += 1
+                    warnings.append("nested duplicate GFTRACE kind in " + key)
+                open_by_kind[kind] = e
+                stack.append(e)
+                events.append(e)
+            elif kind in end_kinds:
+                begin_kind = end_kinds[kind]
+                e = open_by_kind.pop(begin_kind, None)
+                if e is None:
+                    errors += 1
+                    continue
+                if e["args"]["code"] != code or (begin_kind in (1, 9) and e["args"]["aux"] != aux):
+                    errors += 1
+                    continue
+                if not stack or stack[-1] is not e:
+                    errors += 1
+                    # Crossing intervals have no safe synchronous closure.
+                    if e in stack:
+                        stack.remove(e)
+                    continue
+                stack.pop()
+                e.update({"end_ts": ts, "status": "complete"})
+                e["args"]["raw_end_ticks"] = tick
+                if begin_kind == 9:
+                    frame_id = None
+            else:
+                unknown_kinds += 1
+                events.append({"event_id": "gf:%s:%d" % (key, index), "thread_id": thread_key,
+                               "pid": thread["pid"], "tid": thread["tid"], "kind": "instant",
+                               "category": "unknown", "name": "unknown GFTRACE kind %d" % kind,
+                               "begin_ts": ts, "end_ts": ts, "parent_id": None, "frame_id": frame_id,
+                               "status": "complete", "evidence": "observed", "source_id": "gftrace",
+                               "args": {"raw_ticks": tick, "code": code, "aux": aux}})
+    if not mapping:
+        warnings.append("TID/CPU/die/domain mapping unavailable; GF slot labels are logical only")
+    if unknown_kinds:
+        warnings.append("unknown GFTRACE kinds preserved as instant markers")
+    warnings.append("GFTRACE1 source has no loss counter or request lifecycle IDs; continuity is unverified")
+    session["threads"], session["events"] = threads, events
+    last = (maximum - minimum) * 1000000000 // frequency if maximum >= minimum else 0
+    session["time_range"] = [0, last]
+    session["quality"] = {"dropped_records": None, "protocol_errors": errors,
+                          "incomplete_events": sum(e["end_ts"] is None for e in events),
+                          "clean_shutdown": None, "source_continuity": "unverified_legacy_format",
+                          "wait_annotation_coverage": "unknown", "warnings": warnings}
+    session["sources"] = [{"source_id": "gftrace", "kind": "imported_application_annotation",
+                            "last_reliable_ts": last, "open_prefix_proven": False,
+                            "loss": None, "clock_id": session["clock"]["id"]}]
+    if metadata is not None and not isinstance(metadata, dict):
+        session["provenance"].append({"filename": Path(metadata).name, "sha256": _digest(metadata), "kind": "metadata"})
+    if mapping is not None and not isinstance(mapping, dict):
+        session["provenance"].append({"filename": Path(mapping).name, "sha256": _digest(mapping), "kind": "mapping"})
+    return session

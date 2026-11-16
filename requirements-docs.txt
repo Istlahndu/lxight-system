@@ -1,0 +1,2 @@
+# Optional documentation build dependency; not required to run the profiler.
+Markdown>=3.4,<4
