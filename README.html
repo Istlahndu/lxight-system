@@ -3,6 +3,7 @@
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#eef3f6;color:#203647;font:16px/1.85 "Segoe UI","Microsoft YaHei",sans-serif}main{max-width:1140px;margin:28px auto;background:#fff;border-top:5px solid #087f8c;padding:30px 46px 48px;box-shadow:0 3px 18px #18364710}h1{font-size:30px;line-height:1.4;margin:28px 0 20px}h2{font-size:23px;margin-top:40px;padding-top:8px;border-top:1px solid #e1e8ec}h3{font-size:18px;margin-top:28px}a{color:#087887;text-underline-offset:3px}a:hover{color:#03505b}p{margin:15px 0}code,pre{font:13px/1.7 Consolas,"Microsoft YaHei",monospace}code{background:#edf3f5;padding:2px 5px;border-radius:3px;overflow-wrap:anywhere}pre{background:#173446;color:#e5f0f4;padding:18px 20px;border-radius:5px;overflow:auto;tab-size:4}pre code{background:none;padding:0;color:inherit;overflow-wrap:normal}.table-wrap{overflow:auto;margin:20px 0}table{width:100%;border-collapse:collapse;font-size:14px;line-height:1.75}th,td{border:1px solid #d5e1e7;padding:10px 12px;text-align:left;vertical-align:top}th{background:#e8f2f4;color:#16586a}tbody tr:nth-child(even){background:#f7fafb}td:first-child{min-width:105px}nav{display:flex;gap:10px;flex-wrap:wrap}nav a{background:#e8f3f5;border:1px solid #c8e0e5;padding:5px 13px;border-radius:4px;text-decoration:none;font-size:14px}nav a:first-child{background:#087f8c;color:#fff;border-color:#087f8c}.toc-panel{margin-top:24px;background:#f4f8fa;border:1px solid #dce6ec;padding:10px 18px;border-radius:5px}.toc-panel summary{cursor:pointer;font-weight:600}.toc-panel ul{margin:8px 0;padding-left:22px}.toc-panel li{font-size:14px;margin:2px 0}.toc-panel ul ul{display:none}.footer{border-top:1px solid #dce6ec;margin-top:36px;padding-top:14px;font-size:13px;color:#587080}h1,h2,h3{scroll-margin-top:20px}@media(max-width:700px){body{font-size:15px}main{margin:0;padding:20px 18px 32px}h1{font-size:25px}h2{font-size:21px}pre{padding:14px}th,td{padding:8px;min-width:140px}nav{gap:6px}}@media print{body{background:#fff}main{box-shadow:none;margin:0;max-width:none;padding:10px}nav,.toc-panel{display:none}pre{white-space:pre-wrap;background:#f1f4f6;color:#203647}a{color:inherit}table{font-size:11px}.table-wrap{overflow:visible}}
 </style></head><body><main><nav aria-label="文档导航"><a href="README.html">使用说明</a><a href="docs/sdk-quickstart.html">SDK 接入</a><a href="docs/scheduler-interchange.html">调度数据格式</a></nav><details class="toc-panel"><summary>本页目录</summary><div class="toc">
 <ul>
+<li><a href="#_1">快速开始</a></li>
 <li><a href="#1">1. 产品用途与接入方式</a></li>
 <li><a href="#2">2. 功能范围</a></li>
 <li><a href="#3">3. 部署要求</a></li>
@@ -41,6 +42,39 @@
 </tr>
 </tbody>
 </table></div>
+<h2 id="_1">快速开始</h2>
+<p>当前以源码模块方式运行。以下命令使用 Linux / Bash；采集端需要 Python 3.9+，无需安装额外 Python 包。集群用户应先在约定的项目工作目录克隆仓库，再进入已分配的计算作业执行能力检查和采集。</p>
+<h3 id="_2">获取软件</h3>
+<pre><code class="language-bash">git clone https://github.com/Istlahndu/lxight-system.git
+cd lxight-system
+python3 -m lxtrace --version
+</code></pre>
+<p>后续命令均在仓库根目录执行。共享账号环境中的克隆、编译、临时文件和采集结果应保存在约定的工作目录内。</p>
+<h3 id="_3">生成第一份真实采集报告</h3>
+<p>下面的源码示例用于确认采集与报告流程可用，不依赖模型或 SDK。每次运行重新执行 <code>run_dir</code> 赋值，生成新的输出目录：</p>
+<pre><code class="language-bash">run_dir=&quot;$PWD/artifacts/run-$(date +%Y%m%d-%H%M%S)-$$&quot;
+mkdir -p &quot;$run_dir&quot;
+
+python3 -m lxtrace doctor --output &quot;$run_dir/capability.json&quot;
+python3 -m lxtrace record --profile proc-sample \
+  --output &quot;$run_dir/session.lxtrace&quot; -- \
+  python3 examples/plain_workload.py
+</code></pre>
+<p>命令正常结束后得到以下文件。<code>session.lxtrace/</code> 是原生会话目录，应完整保留；<code>session.html</code> 是软件自动生成的自包含交互报告，可以复制到开发电脑后用浏览器直接打开，无需网页服务。</p>
+<pre><code class="language-text">本次运行目录/
+├── capability.json      # 环境与数据源能力
+├── session.lxtrace/     # 原生会话与原始证据
+└── session.html         # 交互报告
+</code></pre>
+<p>报告支持拖动框选、点击“放大到选区”、使用底部水平滚动条浏览、搜索事件及导出。此例展示实际采集的线程状态、最后运行 CPU 等离散样本；矩阵、向量、通信和等待的算子语义需要 SDK 接入。</p>
+<h3 id="_4">采集自己的推理程序</h3>
+<p>先确认原有推理命令在目标环境能够正常运行，再将 <code>--</code> 后面的程序与参数替换为该命令。下面的路径是占位符，应按实际部署替换：</p>
+<pre><code class="language-bash">python3 -m lxtrace record --profile proc-sample \
+  --output &quot;$run_dir/inference.lxtrace&quot; -- \
+  /path/to/python /path/to/inference.py 原有参数
+</code></pre>
+<p>该命令默认生成 <code>inference.html</code>。<code>proc-sample</code> 仅观测直接启动进程的线程；包装多进程启动器时可能只看到启动器自身。要查看各 rank 的矩阵、向量、交换与等待流水线，需按 <a href="docs/sdk-quickstart.html">SDK 接入指南</a> 将当前 SDK 编译接入各工作进程，然后使用 <code>--profile basic</code>；启动器必须等待全部工作进程正常退出。</p>
+<p>首次使用请显式选择采集配置。默认的 <code>resource</code> 要求连续调度等必需来源，当前来源不满足时会在业务启动前失败；<code>basic</code> 也不会自动识别未接入 SDK 的推理程序。GLM、DeepSeek 等引擎的业务语义需要适配，当前尚无自动算子插件。完整的配置、接入、报告与导出步骤见下文及 SDK 接入指南。</p>
 <h2 id="1">1. 产品用途与接入方式</h2>
 <p>本工具用于记录推理程序的线程观测、任务级性能计数和应用标记的执行范围，生成可离线查看、导出和复核的性能会话。开发者可将其用于 LX 上部署的 GLM、DeepSeek 等模型推理程序；实际可观测内容取决于采集配置及推理引擎的接入情况。</p>
 <p>当前提供两种接入方式：</p>

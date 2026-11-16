@@ -9,6 +9,59 @@
 | 采集平台 | Linux，数据源可用性取决于节点配置与权限 |
 | 分析与查看 | Python 3.9+；现代浏览器支持离线查看 |
 
+## 快速开始
+
+当前以源码模块方式运行。以下命令使用 Linux / Bash；采集端需要 Python 3.9+，无需安装额外 Python 包。集群用户应先在约定的项目工作目录克隆仓库，再进入已分配的计算作业执行能力检查和采集。
+
+### 获取软件
+
+```bash
+git clone https://github.com/Istlahndu/lxight-system.git
+cd lxight-system
+python3 -m lxtrace --version
+```
+
+后续命令均在仓库根目录执行。共享账号环境中的克隆、编译、临时文件和采集结果应保存在约定的工作目录内。
+
+### 生成第一份真实采集报告
+
+下面的源码示例用于确认采集与报告流程可用，不依赖模型或 SDK。每次运行重新执行 `run_dir` 赋值，生成新的输出目录：
+
+```bash
+run_dir="$PWD/artifacts/run-$(date +%Y%m%d-%H%M%S)-$$"
+mkdir -p "$run_dir"
+
+python3 -m lxtrace doctor --output "$run_dir/capability.json"
+python3 -m lxtrace record --profile proc-sample \
+  --output "$run_dir/session.lxtrace" -- \
+  python3 examples/plain_workload.py
+```
+
+命令正常结束后得到以下文件。`session.lxtrace/` 是原生会话目录，应完整保留；`session.html` 是软件自动生成的自包含交互报告，可以复制到开发电脑后用浏览器直接打开，无需网页服务。
+
+```text
+本次运行目录/
+├── capability.json      # 环境与数据源能力
+├── session.lxtrace/     # 原生会话与原始证据
+└── session.html         # 交互报告
+```
+
+报告支持拖动框选、点击“放大到选区”、使用底部水平滚动条浏览、搜索事件及导出。此例展示实际采集的线程状态、最后运行 CPU 等离散样本；矩阵、向量、通信和等待的算子语义需要 SDK 接入。
+
+### 采集自己的推理程序
+
+先确认原有推理命令在目标环境能够正常运行，再将 `--` 后面的程序与参数替换为该命令。下面的路径是占位符，应按实际部署替换：
+
+```bash
+python3 -m lxtrace record --profile proc-sample \
+  --output "$run_dir/inference.lxtrace" -- \
+  /path/to/python /path/to/inference.py 原有参数
+```
+
+该命令默认生成 `inference.html`。`proc-sample` 仅观测直接启动进程的线程；包装多进程启动器时可能只看到启动器自身。要查看各 rank 的矩阵、向量、交换与等待流水线，需按 [SDK 接入指南](docs/sdk-quickstart.md) 将当前 SDK 编译接入各工作进程，然后使用 `--profile basic`；启动器必须等待全部工作进程正常退出。
+
+首次使用请显式选择采集配置。默认的 `resource` 要求连续调度等必需来源，当前来源不满足时会在业务启动前失败；`basic` 也不会自动识别未接入 SDK 的推理程序。GLM、DeepSeek 等引擎的业务语义需要适配，当前尚无自动算子插件。完整的配置、接入、报告与导出步骤见下文及 SDK 接入指南。
+
 ## 1. 产品用途与接入方式
 
 本工具用于记录推理程序的线程观测、任务级性能计数和应用标记的执行范围，生成可离线查看、导出和复核的性能会话。开发者可将其用于 LX 上部署的 GLM、DeepSeek 等模型推理程序；实际可观测内容取决于采集配置及推理引擎的接入情况。
