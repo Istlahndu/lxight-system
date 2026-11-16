@@ -192,7 +192,7 @@ python3 -m lxtrace record --profile basic \
   --output "$run_dir/session.lxtrace" -- /path/to/sdk-enabled-launcher args
 ```
 
-命令默认生成 `session.html`，可使用 `--html PATH` 更改位置。采集器注入本轮 `run_id` 及 `LXTRACE_OUTPUT`；最新 SDK 将输出路径中的 `%p` 替换为各进程 PID，使多个工作进程分别保存原始记录。启动器应将这些环境变量传递给工作进程，不要让多个进程改写同一个原档。每个工作进程独立初始化 SDK，并在全部线程及范围结束后关闭；不要在 SDK 已初始化后依赖 `fork` 自动建立新会话。
+命令默认生成 `session.html`，可使用 `--html PATH` 更改位置。采集器注入本轮 `run_id` 及 `LXTRACE_OUTPUT`；最新 SDK 将输出路径中的 `%p` 替换为各进程 PID，使多个工作进程分别保存原始记录。启动器应将这些环境变量传递给工作进程，不要让多个进程改写同一个原档。每个工作进程独立初始化 SDK，并在全部线程及范围结束后关闭。应在首次 SDK 调用前创建进程，或在 `exec` 后初始化；已经使用 SDK 后再 `fork` 的子进程在 `exec` 前禁用记录，Linux 父进程的采集保守标为 partial，具体规则见 [SDK 接入指南](docs/sdk-quickstart.md)。
 
 一次采集的结果目录形如：
 

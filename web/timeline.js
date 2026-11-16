@@ -17,7 +17,7 @@
     if(record.kind==='driver_outside'||record.category==='drv')return 'drv';
     return ['mat','vec','cc'].includes(record.category)?record.category:'other';
   }
-  function pack(records,label){
+  function intervalTracks(records,label,layer){
     const lanes=[],ends=[];
     for(const record of records.slice().sort((a,b)=>a.begin_ns-b.begin_ns||
         (b.end_ns??Infinity)-(a.end_ns??Infinity)||String(a.record_id).localeCompare(String(b.record_id)))){
@@ -25,18 +25,18 @@
       if(lane<0){lane=lanes.length;lanes.push([]);}
       lanes[lane].push(record);ends[lane]=record.end_ns??Infinity;
     }
-    return lanes.map((records,index)=>({type:'interval',layer:'software',
+    return lanes.map((records,index)=>({type:'interval',layer,
       label:label+(index?' · '+(index+1):''),records}));
   }
   function softwareTracks(records,mode){
     const intervals=records.filter(r=>r.layer==='software'&&r.representation==='interval');
     const rows=[];
     if(mode==='categories'){
-      for(const key of Object.keys(labels))rows.push(...pack(intervals.filter(r=>category(r)===key),labels[key]));
+      for(const key of Object.keys(labels))rows.push(...intervalTracks(intervals.filter(r=>category(r)===key),labels[key],'software'));
     }else{
-      rows.push(...pack(intervals.filter(r=>category(r)==='frame'),labels.frame));
-      rows.push(...pack(intervals.filter(r=>!['frame','request'].includes(category(r))),'算子流水线'));
-      rows.push(...pack(intervals.filter(r=>category(r)==='request'),labels.request));
+      rows.push(...intervalTracks(intervals.filter(r=>category(r)==='frame'),labels.frame,'software'));
+      rows.push(...intervalTracks(intervals.filter(r=>!['frame','request'].includes(category(r))),'算子流水线','software'));
+      rows.push(...intervalTracks(intervals.filter(r=>category(r)==='request'),labels.request,'software'));
     }
     return rows;
   }
@@ -57,5 +57,5 @@
     const start=range[0]+fraction*(range[1]-range[0]-span);
     return clampView(range,[start,start+span]);
   }
-  return {category,colors,labels,softwareTracks,clampView,scrollGeometry,viewAtScroll};
+  return {category,colors,labels,intervalTracks,softwareTracks,clampView,scrollGeometry,viewAtScroll};
 });

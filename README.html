@@ -278,7 +278,7 @@ python3 -m lxtrace doctor --output &quot;$run_dir/capability.json&quot;
 python3 -m lxtrace record --profile basic \
   --output &quot;$run_dir/session.lxtrace&quot; -- /path/to/sdk-enabled-launcher args
 </code></pre>
-<p>命令默认生成 <code>session.html</code>，可使用 <code>--html PATH</code> 更改位置。采集器注入本轮 <code>run_id</code> 及 <code>LXTRACE_OUTPUT</code>；最新 SDK 将输出路径中的 <code>%p</code> 替换为各进程 PID，使多个工作进程分别保存原始记录。启动器应将这些环境变量传递给工作进程，不要让多个进程改写同一个原档。每个工作进程独立初始化 SDK，并在全部线程及范围结束后关闭；不要在 SDK 已初始化后依赖 <code>fork</code> 自动建立新会话。</p>
+<p>命令默认生成 <code>session.html</code>，可使用 <code>--html PATH</code> 更改位置。采集器注入本轮 <code>run_id</code> 及 <code>LXTRACE_OUTPUT</code>；最新 SDK 将输出路径中的 <code>%p</code> 替换为各进程 PID，使多个工作进程分别保存原始记录。启动器应将这些环境变量传递给工作进程，不要让多个进程改写同一个原档。每个工作进程独立初始化 SDK，并在全部线程及范围结束后关闭。应在首次 SDK 调用前创建进程，或在 <code>exec</code> 后初始化；已经使用 SDK 后再 <code>fork</code> 的子进程在 <code>exec</code> 前禁用记录，Linux 父进程的采集保守标为 partial，具体规则见 <a href="docs/sdk-quickstart.html">SDK 接入指南</a>。</p>
 <p>一次采集的结果目录形如：</p>
 <pre><code class="language-text">run/
 ├── session.html                         # 默认统一报告

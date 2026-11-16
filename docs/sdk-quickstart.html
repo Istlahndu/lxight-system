@@ -4,11 +4,12 @@
 </style></head><body><main><nav aria-label="文档导航"><a href="../README.html">使用说明</a><a href="sdk-quickstart.html">SDK 接入</a><a href="scheduler-interchange.html">调度数据格式</a></nav><details class="toc-panel"><summary>本页目录</summary><div class="toc">
 <ul>
 <li><a href="#_1">接入位置与生命周期</a></li>
-<li><a href="#_2">长任务与多进程接入限制</a></li>
-<li><a href="#_3">编译到已有引擎</a></li>
+<li><a href="#_2">异步计算与通信重叠</a></li>
+<li><a href="#_3">长任务与多进程接入限制</a></li>
+<li><a href="#_4">编译到已有引擎</a></li>
 <li><a href="#sdk-api">独立的 SDK API 用法示例</a></li>
-<li><a href="#_4">采集与统一报告</a></li>
-<li><a href="#_5">证据解释与支持边界</a></li>
+<li><a href="#_5">采集与统一报告</a></li>
+<li><a href="#_6">证据解释与支持边界</a></li>
 </ul>
 </div>
 </details><h1 id="cc-sdk">C/C++ 推理引擎 SDK 接入指南</h1>
@@ -67,12 +68,17 @@
 <p>context 仅在同一进程有效，不是跨进程关联协议。C API <code>lx_context_attach(context, &amp;previous)</code> 成功返回 0，失败返回 -1；恢复 <code>previous</code> 前，应先结束当前线程中的所有子范围。C++ <code>ContextScope::active()</code> 可查询附加是否成功；析构时恢复之前的 context。生产者帧可以先于消费者工作结束，关联关系不会扩展生产者的实际帧区间。</p>
 <p>建议元数据明确记录 <code>microbatch</code>、<code>layer</code>、<code>operator_id</code>，需要父帧关联时使用 <code>parent_application_frame_id</code>。<code>args_json</code> 必须是 JSON 对象文本；单条记录参数区容量为 767 字节，框架补入的保留字段也占容量。不要向元数据写入 tensor、权重或消息 payload。</p>
 <p>只有已确认的驱动线程角色、完整帧及完整调用全集才能启用 <code>driver_calls_complete=1</code>，用于推导“驱动线程调用外”补集；不满足时保持 0。<code>frame_driver</code>、<code>worker</code> 等只是软件角色，不代表固定物理核或硬件单元。</p>
-<h2 id="_2">长任务与多进程接入限制</h2>
+<h2 id="_2">异步计算与通信重叠</h2>
+<p>SDK 不要求同一线程的计算范围与异步请求串行。适配层应在提交前创建 <code>lx_async_begin_transport(...)</code> 句柄，在已有执行器中提交通信，记录可独立推进的计算范围，并在实际观测到该请求完成后调用 <code>lx_async_complete_observed(handle)</code>。完成可由提交线程或进度线程记录；一个请求只完成一次。多个并发请求分别持有句柄，即使业务名称相同也不能共用句柄。</p>
+<p>异步请求不进入同步范围栈，其生命周期可以与计算交叉，也可以晚于所属帧结束。统一 HTML 将帧、操作和请求生命周期分轨显示，重叠区间保留各自边界；请求显示在提交线程的生命周期轨上，进度线程的真实调用可另用 <code>Exchange</code> 标记，并通过 context 关联帧。只标记非阻塞提交函数的入口和返回，会缺少返回后的请求生命周期。SDK 不会自动拦截通信库或恢复未标记的完成回调。</p>
+<p>这些区间能够说明计算软件范围与通信调用／请求在途时间相交，不能证明整段实际占用计算单元或传输引擎。同一逻辑 CPU 上的多个软件线程可交替推进；设备也可能在主机调用返回后继续执行。只有独立、可校时且语义明确的硬件活动边界才能支持硬件重叠结论。仅有 SDK 数据时，报告的硬件活动并存显示 <code>unavailable</code>，不是零重叠；当前 v2 界面也不提供独立的软件重叠比例指标。</p>
+<h2 id="_3">长任务与多进程接入限制</h2>
 <p>当前 SDK 先在进程内缓冲记录，默认容量为 <strong>32768 条记录</strong>。可在首次 SDK 调用前设置 <code>LXTRACE_CAPACITY</code>，取值范围为 4～1000000；无效值沿用默认容量。线程登记、范围开始和结束等分别占用记录，容量不是完整算子的数量。缓冲满后新增记录会丢失，并在落盘质量信息的 <code>dropped_records</code> 中报告；结束记录也可能丢失，导致范围未闭合。长时间推理应选择有限的采集窗口、控制埋点粒度，并检查丢失记录与未闭合范围，不能将采集结果视为完整执行历史。</p>
 <p>记录在 <code>lx_shutdown()</code> 或正常进程退出时写入文件，没有周期落盘或流式刷新。关闭后本进程不再继续记录，也不能通过再次 <code>lx_init()</code> 开始新会话；窗口需要由引擎控制埋点或采用独立的采集进程生命周期。强制终止、崩溃或跳过正常退出流程时，可能没有任何记录文件。应在工作线程与范围结束后主动调用 <code>lx_shutdown()</code>，并保留输出质量信息。</p>
 <p>同节点多进程引擎可使用 <code>record --profile basic</code> 启动。采集器为本轮注入 <code>run_id</code>，并通过含 <code>%p</code> 的 <code>LXTRACE_OUTPUT</code> 为各工作进程指定原档路径；最新 SDK 将 <code>%p</code> 替换为当前 PID。启动器必须向工作进程传递这些环境变量，并等待所有工作进程正常退出，采集器才汇集原档、生成原生会话与统一 HTML。不要将多个工作进程的输出改成同一个固定文件。</p>
-<p>每个工作进程应在自身入口初始化 SDK；不要在已经初始化 SDK 后依赖 <code>fork</code> 自动建立新会话。context 只在同一进程有效；统一报告汇集进程时间线，不自动建立跨进程请求或帧关联。框架特定关联仍由适配层提供。<code>basic</code> 不支持 <code>--duration</code>，指定时会在启动业务前拒绝执行；需让有限任务正常结束并落盘。</p>
-<h2 id="_3">编译到已有引擎</h2>
+<p>每个工作进程应在自身入口初始化 SDK。首次 SDK 调用之前创建进程，或在 <code>exec</code> 加载新程序后初始化，均可建立独立记录。已经使用 SDK 的进程再 <code>fork</code> 时，子进程在 <code>exec</code> 前禁用 SDK 记录和落盘，不复用继承的缓冲、句柄、context 或锁；再次调用 <code>lx_init()</code> 也不能解除这一限制。在 Linux 标准 <code>fork()</code> 路径上，父进程输出 <code>unsupported_fork_count</code>（至少一次的下界）、协议错误及明确警告，采集结果标为 partial；即使子进程随后 <code>exec</code> 并正常记录，父进程仍保守降级。不要依赖直接系统调用、<code>vfork</code> 或其他绕过 <code>pthread_atfork</code> 的机制报告完整子进程覆盖；本策略不提供通用的多线程 fork 子进程运行支持。</p>
+<p>context 只在同一进程有效；统一报告汇集进程时间线，不自动建立跨进程请求或帧关联。框架特定关联仍由适配层提供。<code>basic</code> 不支持 <code>--duration</code>，指定时会在启动业务前拒绝执行；需让有限任务正常结束并落盘。</p>
+<h2 id="_4">编译到已有引擎</h2>
 <p>将当前版本的 <code>sdk/lxtrace.cpp</code> 加入构建，把 <code>sdk</code> 加入头文件搜索路径。升级后应重新编译并重新链接，确认实际进程加载的是最新 SDK；多进程 <code>%p</code> 输出和运行身份元数据依赖当前实现，不能只替换头文件而继续加载旧共享库。接口分布如下：</p>
 <ul>
 <li><code>sdk/lxtrace.h</code>：C ABI，以及 <code>Frame</code>、<code>Range</code>、<code>Wait</code>、<code>ContextScope</code> 的 C++11 RAII 封装。</li>
@@ -174,7 +180,7 @@ try {
     $env:TMP = $sdkSavedTmp
 }
 </code></pre>
-<h2 id="_4">采集与统一报告</h2>
+<h2 id="_5">采集与统一报告</h2>
 <h3 id="1-sdk">1. 运行已接入 SDK 的程序</h3>
 <p>Linux：</p>
 <pre><code class="language-bash">python3 -m lxtrace record --profile basic \
@@ -241,7 +247,7 @@ python3 -m lxtrace report &quot;$run_dir/imported.lxtrace&quot; \
 python -m lxtrace report &quot;$sdkRun/imported.lxtrace&quot; --output &quot;$sdkRun/imported.html&quot; --run-id historical-run
 </code></pre>
 <p>原生 <code>.lxtrace</code> 是含文件校验、原始来源和规范化记录的目录归档，应完整保留。旧记录缺少可比较时钟信息时，<code>--run-id</code> 也不能使其满足跨进程时间汇集条件。</p>
-<h2 id="_5">证据解释与支持边界</h2>
+<h2 id="_6">证据解释与支持边界</h2>
 <div class="table-wrap"><table>
 <thead>
 <tr>

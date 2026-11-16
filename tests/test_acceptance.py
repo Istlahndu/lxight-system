@@ -169,6 +169,24 @@ class ImporterAcceptanceTests(unittest.TestCase):
         self.assertFalse(r["exact"])
         self.assertTrue(s["quality"]["warnings"])
 
+    def test_sdk_continuity_requires_complete_pairs_and_no_protocol_errors(self):
+        begin = {"type": "begin", "event_id": "p:1", "thread_id": "A", "pid": 1,
+                 "tid": 1, "kind": "request", "category": "cx", "ts": 100}
+        end = {"type": "end", "event_id": "p:1", "tid": 2, "ts": 200}
+        clean = {"type": "quality", "clean_shutdown": True, "dropped_records": 0,
+                 "protocol_errors": 0}
+        for records, incomplete, errors, continuity in [
+            ([begin, end, clean], 0, 0, "complete_recorded_pairs"),
+            ([begin, clean], 1, 0, "unknown"),
+            ([begin, end, end, clean], 0, 1, "unknown"),
+            ([begin, end, dict(clean, protocol_errors=1)], 0, 1, "unknown"),
+        ]:
+            with self.subTest(incomplete=incomplete, errors=errors, records=len(records)):
+                s = load_sdk(self.sdk(records))
+                self.assertEqual(s["quality"]["incomplete_events"], incomplete)
+                self.assertEqual(s["quality"]["protocol_errors"], errors)
+                self.assertEqual(s["quality"]["source_continuity"], continuity)
+
     def test_sdk_request_reuse_correlations_are_distinct_instances(self):
         records = []
         for index in (1, 2):

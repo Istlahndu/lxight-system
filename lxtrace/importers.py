@@ -127,6 +127,22 @@ def load_sdk(path):
             quality["protocol_errors"] += _integer(row.get("protocol_errors", 0), "protocol_errors")
             quality["clean_shutdown"] = row.get("clean_shutdown") is True
             quality["capacity"] = row.get("capacity")
+            if "unsupported_fork_count" in row:
+                quality["unsupported_fork_count"] = _integer(
+                    row["unsupported_fork_count"], "unsupported_fork_count")
+                quality["unsupported_fork_count_is_lower_bound"] = (
+                    row.get("unsupported_fork_count_is_lower_bound") is True)
+                quality["fork_capture_policy"] = row.get("fork_capture_policy")
+                quality["fork_tracking_status"] = row.get("fork_tracking_status")
+                if quality["unsupported_fork_count"]:
+                    quality["clean_shutdown"] = False
+                    quality["warnings"].append(
+                        "SDK initialized before fork: child instrumentation is disabled until exec; "
+                        "child coverage is unknown and fork+exec is conservatively partial")
+                if quality["fork_tracking_status"] == "unavailable":
+                    quality["clean_shutdown"] = False
+                    quality["warnings"].append(
+                        "SDK fork tracking could not be installed; child coverage is unknown")
     # Worker frame references must be explicit application IDs, never proximity in time.
     frame_names = {}
     duplicate_names = set()
@@ -168,7 +184,10 @@ def load_sdk(path):
     session["threads"] = list(threads.values())
     quality["incomplete_events"] = sum(e["end_ts"] is None for e in session["events"])
     quality["loss_position_known"] = False
-    quality["source_continuity"] = "unknown" if (quality["dropped_records"] or parse_errors or not quality["clean_shutdown"]) else "complete_recorded_pairs"
+    quality["source_continuity"] = "unknown" if (
+        quality["dropped_records"] or quality["protocol_errors"]
+        or quality["incomplete_events"] or not quality["clean_shutdown"]
+    ) else "complete_recorded_pairs"
     session["quality"] = quality
     session["time_range"] = [0, last]
     session["sources"] = [{"source_id": "sdk", "kind": "application_annotation",

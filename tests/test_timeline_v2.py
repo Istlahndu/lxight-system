@@ -10,6 +10,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PipelineTrackTests(unittest.TestCase):
+    def test_hardware_intervals_on_one_resource_never_cover_each_other(self):
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('Node unavailable')
+        script = r'''
+const assert=require('assert'),fs=require('fs'),vm=require('vm'),T=require('./web/timeline.js');
+const event=(id,a,b,category,source_id)=>({record_id:id,resource_id:'cpu:0',source_id,
+  begin_ns:a,end_ns:b,category,representation:'interval',layer:'hardware'});
+const records=[event('matrix',0,100,'mat','matrix-trace'),
+  event('transfer',20,80,'cx','device-trace'),event('vector',30,60,'vec','vector-trace'),
+  event('next-transfer',80,90,'cx','device-trace'),event('open',95,null,'vec','vector-trace')];
+const original=JSON.stringify(records),source=fs.readFileSync('./web/viewer.js','utf8');
+const begin=source.indexOf('function buildRows(){'),end=source.indexOf('\nfunction draw(){',begin);
+const state={session:{resources:[{resource_id:'cpu:0',type:'logical_cpu',logical_cpu:0}],records},
+  analysis:{per_cpu:[]},rows:[]};
+const context={S:state,resourceIds:()=>new Set(['cpu:0']),$:()=>({checked:false,value:'pipeline'}),
+  window:{LXTimeline:T},A:{isSchedule:()=>false}};
+vm.runInNewContext(source.slice(begin,end)+';buildRows()',context);
+const rows=state.rows.filter(r=>r.layer==='hardware');
+assert.equal(rows.length,3,'Concurrent hardware activities on one resource require separate lanes');
+assert.equal(rows.flatMap(r=>r.records).length,records.length);
+for(const row of rows)for(let i=1;i<row.records.length;i++)
+  assert(row.records[i-1].end_ns!==null&&row.records[i-1].end_ns<=row.records[i].begin_ns);
+assert.equal(rows.find(r=>r.records.some(x=>x.record_id==='open')).records.find(x=>x.record_id==='open').end_ns,null);
+assert.equal(JSON.stringify(records),original,'Track packing must retain every original record and boundary');
+'''
+        result = subprocess.run([node, '-e', script], cwd=ROOT, capture_output=True,
+                                text=True, encoding='utf-8', env=workspace_environment(), timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_nested_ranges_requests_and_waits_keep_their_boundaries_and_lanes(self):
         node = shutil.which('node')
         if not node:

@@ -35,11 +35,22 @@ def export_trace(s):
         base = dict(name=r.get('name', r['category']), cat=r['layer']+'.'+r['category'],
                     pid=r['resource_id'], tid=r.get('source_id', 'unknown'), args=r)
         if r['representation'] == 'interval' and r.get('end_ns') is not None:
-            events.append(dict(base, ph='X', ts=r['begin_ns']/1000, dur=(r['end_ns']-r['begin_ns'])/1000))
+            if r['layer'] == 'software' and r.get('kind') == 'request':
+                # Async request lifetimes may cross synchronous compute scopes.
+                # Complete X slices on one thread would imply a nested stack.
+                request = dict(base, id='lxtrace-request:'+r['record_id'], scope='lxtrace.request')
+                events.append(dict(request, ph='b', ts=r['begin_ns']/1000))
+                events.append(dict(request, ph='e', ts=r['end_ns']/1000))
+            else:
+                events.append(dict(base, ph='X', ts=r['begin_ns']/1000, dur=(r['end_ns']-r['begin_ns'])/1000))
+        elif r['representation'] == 'interval':
+            events.append(dict(base, ph='i', s='t', ts=r['begin_ns']/1000,
+                               name=base['name']+' · incomplete'))
         elif r['representation'] in ('sample', 'counter_window'):
             events.append(dict(base, ph='i', s='t', ts=r.get('timestamp_ns', r.get('begin_ns', 0))/1000))
+    events.sort(key=lambda event: event['ts'])
     return dict(traceEvents=events, displayTimeUnit='ms', lxtrace_native=s,
-                format_losses=['Trace Event does not preserve native resource graph, windows, null ends or uncertainty. PMU windows are annotations, never hardware activity. Use lxtrace_native for analysis.'])
+                format_losses=['Trace Event does not preserve native resource graph, windows, null ends or uncertainty. PMU windows are annotations, never hardware activity. Async request lifetimes run from submit to completion observed, not physical transfer activity. Use lxtrace_native for analysis.'])
 
 
 def export_csv(result, path):
