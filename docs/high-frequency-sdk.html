@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LX2 性能分析器 · 高频采集与边界 PMU</title><style>
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#eef3f6;color:#203647;font:16px/1.85 "Segoe UI","Microsoft YaHei",sans-serif}main{max-width:1140px;margin:28px auto;background:#fff;border-top:5px solid #087f8c;padding:30px 46px 48px;box-shadow:0 3px 18px #18364710}h1{font-size:30px;line-height:1.4;margin:28px 0 20px}h2{font-size:23px;margin-top:40px;padding-top:8px;border-top:1px solid #e1e8ec}h3{font-size:18px;margin-top:28px}a{color:#087887;text-underline-offset:3px}a:hover{color:#03505b}p{margin:15px 0}code,pre{font:13px/1.7 Consolas,"Microsoft YaHei",monospace}code{background:#edf3f5;padding:2px 5px;border-radius:3px;overflow-wrap:anywhere}pre{background:#173446;color:#e5f0f4;padding:18px 20px;border-radius:5px;overflow:auto;tab-size:4}pre code{background:none;padding:0;color:inherit;overflow-wrap:normal}.table-wrap{overflow:auto;margin:20px 0}table{width:100%;border-collapse:collapse;font-size:14px;line-height:1.75}th,td{border:1px solid #d5e1e7;padding:10px 12px;text-align:left;vertical-align:top}th{background:#e8f2f4;color:#16586a}tbody tr:nth-child(even){background:#f7fafb}td:first-child{min-width:105px}nav{display:flex;gap:10px;flex-wrap:wrap}nav a{background:#e8f3f5;border:1px solid #c8e0e5;padding:5px 13px;border-radius:4px;text-decoration:none;font-size:14px}nav a:first-child{background:#087f8c;color:#fff;border-color:#087f8c}.toc-panel{margin-top:24px;background:#f4f8fa;border:1px solid #dce6ec;padding:10px 18px;border-radius:5px}.toc-panel summary{cursor:pointer;font-weight:600}.toc-panel ul{margin:8px 0;padding-left:22px}.toc-panel li{font-size:14px;margin:2px 0}.toc-panel ul ul{display:none}.footer{border-top:1px solid #dce6ec;margin-top:36px;padding-top:14px;font-size:13px;color:#587080}h1,h2,h3{scroll-margin-top:20px}@media(max-width:700px){body{font-size:15px}main{margin:0;padding:20px 18px 32px}h1{font-size:25px}h2{font-size:21px}pre{padding:14px}th,td{padding:8px;min-width:140px}nav{gap:6px}}@media print{body{background:#fff}main{box-shadow:none;margin:0;max-width:none;padding:10px}nav,.toc-panel{display:none}pre{white-space:pre-wrap;background:#f1f4f6;color:#203647}a{color:inherit}table{font-size:11px}.table-wrap{overflow:visible}}
+</style></head><body><main><nav aria-label="文档导航"><a href="../README.html">使用说明</a><a href="sdk-quickstart.html">SDK 接入</a><a href="scheduler-interchange.html">调度数据格式</a><a href="production-attribution.html">生产归因</a><a href="high-frequency-sdk.html">高频采集</a></nav><details class="toc-panel"><summary>本页目录</summary><div class="toc">
+<ul>
+<li><a href="#_1">编译与生成报告</a></li>
+<li><a href="#_2">接入原则</a></li>
+<li><a href="#_3">缓冲、落盘与异常恢复</a></li>
+<li><a href="#raw">RAW 与边界计数</a></li>
+<li><a href="#_4">开销与验收边界</a></li>
+</ul>
+</div>
+</details><h1 id="pmu">高频采集与边界 PMU</h1>
+<p>高频路径用于多线程推理执行器，提供每线程独立缓冲、16 字节普通事件、后台分段持久化及异常退出后的有效前缀恢复。它是可选的 C ABI，原 <code>lxtrace.h</code>、JSONL、GFTRACE1/2 导入与生产归因接口继续可用。原 JSONL 接口仍适合动态元数据、跨线程异步请求和上下文传递；需要高频记录的同步入口应接入 <code>lxtrace_compact.h</code>。</p>
+<h2 id="_1">编译与生成报告</h2>
+<p>编译器需要支持 C++11 和线程库，Python 端无新增依赖：</p>
+<pre><code class="language-bash">mkdir -p build
+g++ -std=c++11 -O2 -pthread -Isdk sdk/lxtrace_compact.cpp \
+  examples/compact_sdk.cpp -o build/compact_sdk
+
+python3 -m lxtrace record --profile compact \
+  --output artifacts/run/session.lxtrace -- ./build/compact_sdk
+</code></pre>
+<p>每次使用新的输出路径。命令自动生成 <code>session.html</code>，支持原有多轨时间线、悬停详情、框选放大与水平滚动。程序必须先调用 <code>lx_compact_init_env</code>，采集器将 <code>LXTRACE_COMPACT_OUTPUT</code> 与共同的 <code>LXTRACE_RUN_ID</code> 传递给各进程，<code>%p</code> 展开为 PID。没有输出变量或 <code>LXTRACE_DISABLED=1</code> 时禁用采集，业务继续执行。</p>
+<p>直接使用 <code>lx_compact_init(path, ring_records, flush_ms)</code> 时，路径按字面解释，且排他创建；多进程必须各写独立文件。已有文件不会覆盖。接入的应用自己处理返回值；采集失败不应破坏原有推理结果。</p>
+<p>独立采集文件可经统一入口生成报告，无需临时编写 HTML：</p>
+<pre><code class="language-bash">python3 -m lxtrace report capture.lxc --output report.html \
+  --session-output session.lxtrace
+python3 -m lxtrace import --type sdk --input capture.lxc --output session.json
+</code></pre>
+<p>导入器根据文件头识别格式，扩展名不决定文件内容。原始二进制以 Base64 与 SHA256 证据保存在原生会话中。</p>
+<p>长任务可先做流式检查，再选择完整线程生成 HTML：</p>
+<pre><code class="language-bash">python3 -m lxtrace compact-info capture.lxc --output capture-info.json
+python3 -m lxtrace compact-select capture.lxc --thread 1 --thread 5 \
+  --output selected.lxc
+python3 -m lxtrace report selected.lxc --output selected.html
+</code></pre>
+<p><code>compact-info</code> 逐段检查 CRC、序号、线程、站点、配对、计数和结束质量，内存不随事件总量线性增长。<code>--thread</code> 使用摘要中的 compact 线程实例 ID，不是操作系统 TID 或 CPU 号。选轨保留所选线程的完整时间范围、原文件 SHA256、选择范围与原始质量，原文件保持不变。选择结果中的原始 footer 计数仍代表源文件，不应解释为所选线程的独立统计；选轨不表示完整进程或全机覆盖。</p>
+<p>当前交互报告仍在内存中归一化记录，默认限制为 128 MiB 二进制及 100 万条估算记录预算，PMU 读数按其展开后的样本与计数窗计算预算。超限会明确报错并保留原始文件，不会静默抽样。选轨后仍超限时需要进一步减少线程；流式摘要可以检查全量数据，尚不支持直接交互浏览任意大小的全量时间线。</p>
+<h2 id="_2">接入原则</h2>
+<p>初始化、站点注册、线程注册和元数据写入属于冷路径。为每个静态入口只注册一次站点，在每个生产者线程开始工作时注册一次线程。站点保存名称、类别和 JSON 参数；热路径仅保存时间戳、站点 ID、BEGIN/END/INSTANT 与 16 位 aux。</p>
+<pre><code class="language-c">uint32_t gemm = lx_compact_site(&quot;dense.gemm&quot;, &quot;mat&quot;, &quot;{\&quot;operator\&quot;:\&quot;gate_up\&quot;}&quot;);
+/* 在各工作线程中： */
+if (lx_compact_thread(&quot;executor.worker&quot;) &lt; 0) { /* 记录接入失败 */ }
+lx_compact_event(gemm, LX_COMPACT_BEGIN, 0, 0);
+/* 原计算调用 */
+lx_compact_event(gemm, LX_COMPACT_END, 0, 0);
+</code></pre>
+<p>类别使用 <code>mat/vec/mem/cc/cx/fe/wait/unknown</code>。参数 <code>kind</code> 可声明 <code>frame/range/wait/exchange</code>，例如 <code>{"kind":"wait"}</code>。<code>aux</code> 是应用自定义的短整数标签，可用于相位号；它不是异步请求 ID，也不能存放未经说明的截断字节数。</p>
+<p>同一线程的同步范围必须严格嵌套，结束使用相同站点。跨线程计算与等待可以在时间上重叠；每个线程都有独立缓冲。高频接口不支持用 BEGIN/END 表达跨线程异步生命周期，此类请求继续使用原 SDK 的异步接口。线程名或 rank 不构成绑核证据，软件范围不表示硬件单元持续繁忙。</p>
+<p>普通记录时间为 CLOCK_MONOTONIC 整数纳秒，Windows 使用 steady_clock；时间参数为 0 时由 SDK 读取。传入非零值时，调用方必须保证属于同一时钟。不要将 CNTVCT tick 或 PMU 计数直接填入该字段。GFTRACE2 原生 CNTVCT 的整数换算路径继续独立工作。</p>
+<h2 id="_3">缓冲、落盘与异常恢复</h2>
+<p>每线程环形缓冲使用单生产者、单消费者协议，普通事件热路径没有全局互斥锁、动态分配或文件 I/O。后台线程写入带版本号、连续序号、CRC32 和尾标记的数据段，并周期执行 fflush 与 fsync（Windows 为 <code>_commit</code>）。内存容量按线程数与 <code>ring_records × 16</code> 字节估算，另加线程状态；PMU 扩展占用多个槽位。缓冲容量限制瞬时积压，不限制整段任务总记录数。</p>
+<p>当前最多注册 1024 个线程实例，同步嵌套深度最多 128。线程退出后缓冲保留到进程结束，以支持检查迟到调用，因此内存应按整个进程生命周期中注册过的线程数估算，不能只按同时活跃线程数估算。线程池应复用工作线程。</p>
+<p>生产速率高于消费或磁盘持续吞吐时仍可能丢失。SDK 返回失败，并保存累计丢失数、首次/末次尝试序号和时间边界。这是保守的丢失范围，不表示每一条缺失事件的精确时刻。导入器将穿过该范围的调用标为不完整，防止重复站点的 BEGIN/END 被错误配对。必须检查报告中的质量信息，不能仅凭生成 HTML 就判定采集完整。</p>
+<p>异常退出后仅恢复连续通过校验的数据段；遇到截断、损坏、序号断裂即停止，不跳过缺口拼接后续记录。未落盘的尾部无法恢复。缺少最终质量快照时，即使保存的事件都有配对，也标记 partial，不能声称任务完整。文件系统或存储设备是否在断电后真正保存数据由其持久化语义决定。</p>
+<p>正常退出应先结束范围、join 所有生产者，再 shutdown。初始化后 fork 的子进程直到 exec 前禁用采集，父进程保守标记 partial；应在首次 SDK 调用前 fork，或在 exec 后初始化。采集器不会改变系统策略或自动终止业务。</p>
+<p>shutdown 后的调用会计入迟到记录，后续 shutdown 或 atexit 会追加累计质量快照；最后一次落盘之后才发生的静态析构调用不能保证被持久记录。不要用这一机制替代先 join 再 shutdown 的生命周期约定。</p>
+<h2 id="raw">RAW 与边界计数</h2>
+<p>Linux 可选 <code>lxtrace_pmu.h/.cpp</code> 为调用线程打开一个 perf 组：cycles 作为 leader，最多 8 个不同的 16 位 RAW 事件。一次组 read 返回所有计数及共同的 <code>time_enabled/time_running</code>，保持 uint64 原值；记录读取前后 CLOCK_MONOTONIC 时刻。权限拒绝、未运行、短读和线程归属错误分别返回明确状态，不用零代替不可用读数。句柄由创建线程使用并关闭。</p>
+<pre><code class="language-c">lx_pmu_event events[] = {
+    {LX_PMU_TYPE_HARDWARE, 0, 0, 0},
+    {LX_PMU_TYPE_RAW, 0x7201, 0, 0},
+    {LX_PMU_TYPE_RAW, 0x7005, 0, 0}
+};
+lx_pmu_config config = {events, 3, 0};
+lx_pmu *reader = 0;
+lx_pmu_error error;
+int status = lx_pmu_open(&amp;config, &amp;reader, &amp;error);
+/* 若 status != LX_PMU_OK，保存 error，按应用策略停止此次计数采集。 */
+</code></pre>
+<p>链接 <code>sdk/lxtrace_pmu.cpp</code> 后，可通过 <code>lxtrace_pmu_compact.h</code> 的 <code>lx_compact_boundary</code> 在边界同时保存软件事件与完整读数。先在冷路径写入字典，数组顺序必须与实际 perf 组一致：</p>
+<pre><code class="language-c">lx_compact_metadata(&quot;{\&quot;pmu_events\&quot;:[{\&quot;name\&quot;:\&quot;cycles\&quot;,\&quot;type\&quot;:0,\&quot;config\&quot;:0},{\&quot;name\&quot;:\&quot;MOPA\&quot;,\&quot;type\&quot;:4,\&quot;config\&quot;:29185},{\&quot;name\&quot;:\&quot;memstall\&quot;,\&quot;type\&quot;:4,\&quot;config\&quot;:28677}]}&quot;);
+int result = lx_compact_boundary(reader, gemm, LX_COMPACT_BEGIN, 0, &amp;error);
+/* 检查 result；业务计算；随后同样记录 END。 */
+</code></pre>
+<p>导入结果保留累计读数样本，并生成同一线程相邻读数之差的计数窗。计数窗不代表硬件活动边界；部分选区不按时长摊分。复用时的缩放是估计，继续排除在精确合计之外。实际事件含义必须与目标硬件字典及已知指令微基准核验，成功打开 RAW 不足以证明其语义。</p>
+<p>每个样本保留读取前后时间、站点、边界种类、aux 及可证明的软件范围。只有同一次 BEGIN/END 的相邻读数才标为同一软件范围；跨采集窗口或没有共同 frame 的差值标记为未归属累计窗口。若 perf 组在未采集期间仍启用，这些差值会包含期间的工作，不能归入前一帧或后一帧。已知事件丢失范围内不派生计数窗，原始累计读数继续保留。</p>
+<p>外部进程树聚合计数也可指定 RAW，无需接 SDK：</p>
+<pre><code class="language-json">{&quot;raw_events&quot;:[&quot;0x7201&quot;,&quot;0x7005&quot;]}
+</code></pre>
+<p>将此对象保存为配置文件后，传入 <code>record --profile task-pmu --config config.json</code>。这仍是进程树聚合，不能等价解释为逐线程或逐核数据。未配置 RAW 时继续使用原 cycles/instructions 配置。</p>
+<h2 id="_4">开销与验收边界</h2>
+<p>16 字节只表示普通事件负载；段头、线程/站点元数据、质量与 PMU 扩展另有开销。是否零丢失取决于事件速率、线程数、缓冲、落盘间隔和磁盘吞吐。≤1% 是需要按具体推理配置测量的目标，不能由无锁设计直接保证；纯打点紧循环的相对开销也不等于推理开销。</p>
+<p>只读时钟采集和计数采集应分成独立运行。PMU read 自身会扰动执行，生产归因继续使用 tT 时间与 tA/tB/tV 比率搬运，见 <a href="production-attribution.html">生产归因报告</a>。采集、分析与硬件语义验证不需要软件自动申请 root；若节点禁止自身任务 perf，必须由管理员提供相应访问能力后才能完成硬件计数验收。</p><p class="footer">灵晟 LX2 性能分析器 · 0.2.0-demo · 使用文档</p></main></body></html>

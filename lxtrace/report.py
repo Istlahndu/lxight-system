@@ -46,9 +46,13 @@ def _content(value):
 def _kind(path):
     if path.is_dir():
         return 0 if (path / "manifest.json").is_file() else None
-    if path.is_file() and path.suffix.lower() == ".bin":
+    if path.is_file():
         with path.open("rb") as stream:
-            return {b"GFTRACE1": 4, b"GFTRACE2": 5}.get(stream.read(8))
+            magic = stream.read(8)
+        if magic[:4] == b'LXC1':
+            return 6
+        if magic in (b'GFTRACE1', b'GFTRACE2'):
+            return {b'GFTRACE1': 4, b'GFTRACE2': 5}[magic]
     if not path.is_file() or path.suffix.lower() not in (".json", ".jsonl", ".lxtrace"):
         return None
     try:
@@ -113,6 +117,9 @@ def _load(path, kind):
         session = resource.load_session(path)
         exact = (path / "manifest.json").read_bytes()
     else:
+        if kind == 6:
+            from .compact import load_compact
+            session = load_compact(path)
         exact = path.read_bytes()
         if kind in (4, 5):
             imported = load_gftrace(path)
@@ -130,7 +137,7 @@ def _load(path, kind):
             legacy.update({k: meta[k] for k in ("host_id", "boot_id", "run_id") if meta.get(k)})
             legacy["raw_files"] = {"capture/sdk.jsonl": exact.decode("utf-8")}
             session = resource.migrate_v1(legacy)
-        else:
+        elif kind != 6:
             value = _json(exact.decode("utf-8"))
             if kind == 2:
                 legacy = value
@@ -147,8 +154,8 @@ def _load(path, kind):
                 if candidate.get("schema_version") == "lxtrace.session.v1":
                     legacy = candidate
                     break
-    input_name = "manifest.json" if kind == 0 else ("sdk.jsonl" if kind == 3 else "trace.bin.base64" if kind in (4, 5) else "session.json")
-    raw["raw/input/" + input_name] = base64.b64encode(exact).decode("ascii") if kind in (4, 5) else exact.decode("utf-8")
+    input_name = "manifest.json" if kind == 0 else ("sdk.jsonl" if kind == 3 else "trace.bin.base64" if kind in (4, 5, 6) else "session.json")
+    raw["raw/input/" + input_name] = base64.b64encode(exact).decode("ascii") if kind in (4, 5, 6) else exact.decode("utf-8")
     for key in ("host_id", "boot_id", "run_id", "job_id"):
         value = (legacy or {}).get(key)
         if key in ("host_id", "boot_id") and session.get(key) and value and session[key] != value:
@@ -304,6 +311,7 @@ def _references(value, prefix, resources, sources, clocks):
         return copy.deepcopy(value)
     result = {}
     identifiers = {"record_id", "event_id", "parent_id", "frame_id", "request_id",
+                   "software_scope_id", "software_frame_id",
                    "thread_id", "thread_instance_id", "application_frame_id",
                    "parent_application_frame_id", "target_event_id"}
     for key, child in value.items():
@@ -351,14 +359,18 @@ def merge_sessions(paths, run_id=None):
         r["layer"] == "hardware" and r["representation"] in ("counter_window", "sample", "aggregate"))
         for s in sessions for r in s["records"]) and all(
         source.get("source_layer", source.get("layer")) in ("software", "hardware") for s in sessions for source in s["sources"])
-    if not software_only and not (cntvct_only and counter_only_hardware):
+    compact_counters = counter_only_hardware and all(
+        any(p.get('kind') == 'compact_sdk_import' for p in s['provenance']) and all(
+            source.get('source_layer') == 'software' or source.get('native_format') == 'lxtrace.compact.v1'
+            for source in s['sources']) for s in sessions)
+    if not software_only and not ((cntvct_only or compact_counters) and counter_only_hardware):
         raise ValueError("multi-input reports currently support software sources only; separate proc/PMU runs cannot be merged")
     for key in ("host_id", "boot_id"):
         if any(not s.get(key) for s in sessions) or len({s[key] for s in sessions}) != 1:
             raise ValueError("multi-input report requires the same known " + key)
     original_runs = [s.get("run_id") for s in sessions]
     if not software_only and (any(not value for value in original_runs) or len(set(original_runs)) != 1):
-        raise ValueError("CNTVCT PMU inputs must have the same run_id; grouping cannot align separate counting runs")
+        raise ValueError("PMU inputs must have the same run_id; grouping cannot align separate counting runs")
     if run_id is None and (any(not value for value in original_runs) or len(set(original_runs)) != 1):
         raise ValueError("different run_id values require an explicit run_id grouping declaration")
     group = run_id or original_runs[0]
@@ -438,9 +450,9 @@ def merge_sessions(paths, run_id=None):
                 if old["clock_id"] not in cid:
                     raise ValueError("software record references an unknown clock")
                 r["clock_id"] = cid[old["clock_id"]]
-            for field in ("begin_ns", "end_ns", "timestamp_ns"):
+            for field in ("begin_ns", "end_ns", "timestamp_ns", "read_end_ns"):
                 if r.get(field) is not None:
-                    r[field] = retime(r[field], _record_tick(old, field))
+                    r[field] = retime(r[field], _record_tick(old, field) if field != 'read_end_ns' else None)
             r["raw_refs"] = [_raw_reference(ref, raw_prefix) for ref in r.get("raw_refs", [])]
             r["original_identity"] = dict(session_id=s["session_id"], record_id=old["record_id"],
                                            resource_id=old["resource_id"], source_id=old["source_id"],

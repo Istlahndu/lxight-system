@@ -129,8 +129,8 @@ def topology():
     return resources, affinity
 
 
-def _event_open(event_config, pid=0, cpu=-1, inherit=False, enable_on_exec=False, group_fd=-1):
-    """Open a disabled generic PMU event; never changes system configuration."""
+def _event_open(event_config, pid=0, cpu=-1, inherit=False, enable_on_exec=False, group_fd=-1, event_type=0):
+    """Open a disabled PMU event; never changes system configuration."""
     if not LINUX:
         raise OSError(errno.ENOSYS, "perf_event_open requires Linux")
     machine = platform.machine().lower()
@@ -138,13 +138,13 @@ def _event_open(event_config, pid=0, cpu=-1, inherit=False, enable_on_exec=False
     if syscall_number is None:
         raise OSError(errno.ENOSYS, "unsupported perf_event_open syscall architecture")
     attr = ctypes.create_string_buffer(128)
-    # PERF_TYPE_HARDWARE; read raw, time_enabled, time_running.
+    # PERF_TYPE_HARDWARE by default; PERF_TYPE_RAW only when explicitly requested.
     flags = 1 | (1 << 5) | (1 << 6)
     if inherit:
         flags |= 1 << 1
     if enable_on_exec:
         flags |= 1 << 12
-    struct.pack_into("=IIQQQQQ", attr, 0, 0, 128, event_config, 0, 0, 3, flags)
+    struct.pack_into("=IIQQQQQ", attr, 0, event_type, 128, event_config, 0, 0, 3, flags)
     libc = ctypes.CDLL(None, use_errno=True)
     fd = libc.syscall(ctypes.c_long(syscall_number), ctypes.byref(attr),
                       ctypes.c_int(pid), ctypes.c_int(cpu), ctypes.c_int(group_fd), ctypes.c_ulong(8))
@@ -154,9 +154,12 @@ def _event_open(event_config, pid=0, cpu=-1, inherit=False, enable_on_exec=False
     return int(fd)
 
 
-def _probe_event(config, cpu=-1):
+def _probe_event(config, cpu=-1, event_type=0):
     try:
-        fd = _event_open(config, pid=-1 if cpu >= 0 else 0, cpu=cpu)
+        options = dict(pid=-1 if cpu >= 0 else 0, cpu=cpu)
+        if event_type:
+            options["event_type"] = event_type
+        fd = _event_open(config, **options)
         os.close(fd)
         return dict(availability="available", errno=None, reason_code="disabled_event_open_succeeded",
                     failure_stage=None)
@@ -165,6 +168,33 @@ def _probe_event(config, cpu=-1):
                     "unsupported" if exc.errno in (errno.ENOSYS, errno.ENOENT, errno.ENODEV,
                                                     errno.EOPNOTSUPP) else "unverified",
                     errno=exc.errno, reason_code=str(exc), failure_stage="perf_event_open")
+
+
+def _task_events(profile, config):
+    """Retain the default event contract; RAW opt-in is cycles plus exact codes."""
+    if "raw_events" not in config:
+        return [(name, code, 0) for name, code in EVENTS]
+    if profile != "task-pmu":
+        raise ValueError("raw_events is supported only by the task-pmu profile")
+    requested = config["raw_events"]
+    if not isinstance(requested, list) or len(requested) > 8:
+        raise ValueError("raw_events must be a list of at most eight distinct 16-bit event codes")
+    codes = []
+    for raw in requested:
+        if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+            raise ValueError("RAW event codes must be integers or 0x-prefixed hexadecimal strings")
+        if isinstance(raw, str):
+            if not raw.startswith(("0x", "0X")) or len(raw) <= 2 or any(c not in "0123456789abcdefABCDEF" for c in raw[2:]):
+                raise ValueError("RAW string event codes must use 0x-prefixed hexadecimal")
+            code = int(raw, 16)
+        else:
+            code = raw
+        if not 0 <= code <= 0xffff:
+            raise ValueError("RAW event codes must fit 16 bits")
+        if code in codes:
+            raise ValueError("RAW event codes must be distinct")
+        codes.append(code)
+    return [("cycles:u", 0, 0)] + [("raw:0x%04x:u" % code, code, 4) for code in codes]
 
 
 def _cap(feature, availability="unverified", reason="not_probed", scope=None, **extra):
@@ -312,6 +342,7 @@ def record_external(output, program=None, attach=None, duration_ns=None, profile
         raise ValueError("duration must be positive")
     if config is not None and not isinstance(config, dict):
         raise ValueError("config must be a JSON object")
+    task_events = _task_events(profile, config or {})
     interval = float((config or {}).get("sample_interval_ms", 10)) / 1000
     if not .001 <= interval <= 10:
         raise ValueError("sample_interval_ms must be between 1 and 10000")
@@ -319,13 +350,23 @@ def record_external(output, program=None, attach=None, duration_ns=None, profile
     if not 1 <= quota <= 1000000:
         raise ValueError("max_samples must be between 1 and 1000000")
     snapshot = doctor(job_id=job_id)
+    if profile == "task-pmu" and "raw_events" in (config or {}):
+        for name, code, event_type in task_events:
+            if event_type != 4:
+                continue
+            snapshot["capability_manifest"].append(_cap(
+                "task_pmu." + name, scope="own_launched_process_tree:user",
+                implementation_status="implemented", semantics_status="caller_supplied_raw_encoding_unverified",
+                boundary_support="counter_window", correlation_status="process_instance", event=name,
+                event_type=event_type, event_config=code, filter="exclude_kernel,exclude_hypervisor",
+                **_probe_event(code, event_type=event_type)))
     if attach is not None:
         _save_blocked(out, snapshot, "attach requires a trusted collector service and verified allocation; shared UID/PID/job text is not authorization")
     if not program or not isinstance(program, (list, tuple)):
         raise ValueError("record requires -- <original program> [arguments]")
     if not all(isinstance(part, str) and part for part in program):
         raise ValueError("program arguments must be nonempty strings")
-    required = ["schedule", "core_pmu"] if profile == "resource" else ["proc_sample"] if profile == "proc-sample" else ["task_pmu." + e for e, _ in EVENTS]
+    required = ["schedule", "core_pmu"] if profile == "resource" else ["proc_sample"] if profile == "proc-sample" else ["task_pmu." + name for name, _, _ in task_events]
     if config:
         requested = config.get("required_sources", required)
         if requested != required:
@@ -360,12 +401,16 @@ def record_external(output, program=None, attach=None, duration_ns=None, profile
             process_start = initial[0]["start_ticks"] if initial else None
             if profile == "task-pmu":
                 leader = -1
-                for event, encoding in EVENTS:
+                for event, encoding, event_type in task_events:
                     try:
-                        fd = _event_open(encoding, pid=pid, inherit=True, enable_on_exec=True, group_fd=leader)
+                        options = dict(pid=pid, inherit=True, enable_on_exec=True, group_fd=leader)
+                        if event_type:
+                            options["event_type"] = event_type
+                        fd = _event_open(encoding, **options)
                     except OSError as exc:
                         capabilities["task_pmu." + event].update(
-                            availability="denied" if exc.errno in (errno.EACCES, errno.EPERM) else "unverified",
+                            availability="denied" if exc.errno in (errno.EACCES, errno.EPERM) else
+                                         "unsupported" if exc.errno in (errno.ENOSYS, errno.ENOENT, errno.ENODEV, errno.EOPNOTSUPP) else "unverified",
                             errno=exc.errno, reason_code=str(exc), failure_stage="capture_event_open")
                         _save_blocked(out, snapshot, "task counter setup failed before workload start: " + event)
                     fds.append((event, fd))
@@ -394,7 +439,12 @@ def record_external(output, program=None, attach=None, duration_ns=None, profile
             ended = time.monotonic_ns()
             for event, fd in fds:
                 try:
-                    counter_results.append(dict(event=event, **_read_counter(fd)))
+                    item = dict(event=event, **_read_counter(fd))
+                    if "raw_events" in (config or {}):
+                        encoding, event_type = next((code, typ) for name, code, typ in task_events if name == event)
+                        item.update(event_type=event_type, event_config=encoding,
+                                    event_semantics="caller_supplied_raw_encoding_unverified" if event_type == 4 else "generic_linux_event")
+                    counter_results.append(item)
                 except OSError as exc:
                     counter_results.append(dict(event=event, error=str(exc), errno=exc.errno))
                     capture_warnings.append("counter_read_failed:" + event)
@@ -421,6 +471,10 @@ def record_external(output, program=None, attach=None, duration_ns=None, profile
                         resolution_ns=None if profile == "task-pmu" else int(interval * 1e9),
                         completeness="single_counter_window" if profile == "task-pmu" else "discrete_samples",
                         lost_records=0, boundary_support="counter_window" if profile == "task-pmu" else "sample_only")]
+        if profile == "task-pmu" and "raw_events" in (config or {}):
+            sources[0].update(raw_events=[code for _, code, typ in task_events if typ == 4],
+                              raw_semantics="caller supplied; requires hardware-specific validation",
+                              attribution_scope="launched_process_tree_aggregate;not_per_thread_or_per_core")
         for i, counter in enumerate(counter_results):
             if "error" in counter:
                 continue

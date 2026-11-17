@@ -91,7 +91,7 @@ def make_parser():
     q.add_argument('--job'); q.add_argument('--no-probe', action='store_true')
     q.add_argument('--output', default='artifacts/v2/capability.json')
     q = c.add_parser('record', help='capture a program and automatically write its unified HTML report')
-    q.add_argument('--profile', choices=['resource','task-pmu','proc-sample','schedule','basic'], default='resource')
+    q.add_argument('--profile', choices=['resource','task-pmu','proc-sample','schedule','basic','compact'], default='resource')
     q.add_argument('--config', help='JSON with required_sources / optional_sources')
     q.add_argument('--job'); q.add_argument('--attach', type=int)
     q.add_argument('--duration', type=timestamp); q.add_argument('--output', required=True)
@@ -131,6 +131,11 @@ def make_parser():
     q.add_argument('--output', required=True, help='self-contained production attribution HTML')
     q.add_argument('--analysis-output', help='analysis JSON (defaults to OUTPUT.analysis.json)')
     q.add_argument('--evidence-output', help='optional resource .lxtrace archive of calibrated aggregate evidence')
+    q = c.add_parser('compact-info', help='stream-check an entire compact capture without building an in-memory timeline')
+    q.add_argument('input'); q.add_argument('--output', help='summary JSON; default: stdout')
+    q = c.add_parser('compact-select', help='copy complete selected compact thread instances, retaining source quality and provenance')
+    q.add_argument('input'); q.add_argument('--thread', type=int, required=True, action='append')
+    q.add_argument('--output', required=True, help='new compact file; existing files are never replaced')
     q = c.add_parser('bundle-viewer'); q.add_argument('session'); q.add_argument('--output', required=True)
     q = c.add_parser('serve'); q.add_argument('--port', type=int, default=8765)
     q.add_argument('--directory', default='artifacts/v2')
@@ -164,11 +169,12 @@ def main(argv=None):
                 raise ValueError('HTML report must be separate from the native session archive')
             if html.exists():
                 raise ValueError('HTML report already exists; choose a new output path')
-            if args.profile == 'basic':
+            if args.profile in ('basic', 'compact'):
                 if args.attach is not None or args.config or args.job:
                     raise ValueError('basic launches an explicit SDK-enabled program; --attach/--config/--job are unsupported')
                 from .software import record_software
-                session, code = record_software(args.output, program, str(html), args.duration)
+                session, code = record_software(args.output, program, str(html), args.duration,
+                                                **({'compact': True} if args.profile == 'compact' else {}))
             else:
                 from .collector import record_external
                 config = json.loads(Path(args.config).read_text(encoding='utf-8-sig')) if args.config else None
@@ -186,6 +192,22 @@ def main(argv=None):
             from .attribution.workflow import run_report
             analysis = run_report(args)
             print('attribution='+str(analysis['schema_version'])+' html='+str(args.output))
+        elif args.command == 'compact-info':
+            from .compact_stream import inspect_compact
+            if args.output and (Path(args.output).resolve() == Path(args.input).resolve() or Path(args.output).exists()):
+                raise ValueError('compact summary must use a new path separate from the input capture')
+            summary = inspect_compact(args.input)
+            if args.output:
+                write_json(summary, args.output)
+                print('summary='+str(args.output)+' events='+str(summary['event_count']))
+            else:
+                print(json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False))
+            return 0
+        elif args.command == 'compact-select':
+            from .compact_stream import select_compact
+            summary = select_compact(args.input, args.output, args.thread)
+            print('compact='+str(args.output)+' events='+str(summary['event_count'])+' threads='+str(summary['thread_count']))
+            return 0
         elif args.command == 'demo':
             s = R.demo_session(args.case); R.write_session(s, args.output)
             if args.html: R.write_report(s, args.html)

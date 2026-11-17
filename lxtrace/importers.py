@@ -126,6 +126,10 @@ def _sdk_quality(quality, rows):
 def load_sdk(path):
     """Read lxtrace.sdk.v1 JSONL; only observed, matched ends close events."""
     path = Path(path)
+    with path.open('rb') as stream:
+        if stream.read(4) == b'LXC1':
+            from .compact import load_compact
+            return load_compact(path)
     rows, parse_errors = [], []
     with path.open(encoding="utf-8") as f:
         for line_no, line in enumerate(f, 1):
@@ -138,6 +142,11 @@ def load_sdk(path):
                 rows.append(row)
             except (ValueError, json.JSONDecodeError):
                 parse_errors.append("invalid JSON record at line %d" % line_no)
+    return _load_sdk_rows(path, rows, parse_errors)
+
+
+def _load_sdk_rows(path, rows, parse_errors):
+    """Shared canonical event decoder; compact records retain original provenance."""
     metas = [r for r in rows if r.get("type") == "meta"]
     if not metas or metas[0].get("schema_version") != "lxtrace.sdk.v1":
         raise ValueError("missing supported lxtrace.sdk.v1 header")

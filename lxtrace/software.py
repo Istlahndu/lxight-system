@@ -5,6 +5,7 @@ terminates the business program to manufacture a recording boundary. Original
 per-process JSONL, immutable read snapshots and the capture manifest are retained.
 """
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
@@ -54,7 +55,7 @@ def _read_meta(content):
     return {}
 
 
-def record_software(output, program, html=None, duration=None):
+def record_software(output, program, html=None, duration=None, compact=False):
     """Return (native_v2_session, business_exit_code), always exporting HTML.
 
     Each process inherits a run UUID and an SDK output template containing %p.
@@ -87,7 +88,7 @@ def record_software(output, program, html=None, duration=None):
     raw_dir.mkdir(parents=True)
     snapshot_dir.mkdir()
     manifest_path = capture_dir / "manifest.json"
-    template = raw_dir / "sdk-%p.jsonl"
+    template = raw_dir / ("sdk-%p.lxc" if compact else "sdk-%p.jsonl")
     snapshot = doctor(probe=False)
     manifest = {"format": "lxtrace.software-capture.v1", "run_id": run_id,
                 "status": "starting", "command": list(program), "cwd": str(Path.cwd()),
@@ -100,7 +101,7 @@ def record_software(output, program, html=None, duration=None):
                 "process_group": {"created": False, "membership_verified": False,
                                   "scope": "explicitly launched process group; detached descendants are not guaranteed"}}
     _write_json(manifest_path, manifest)
-    env = workspace_environment({"LXTRACE_OUTPUT": str(template),
+    env = workspace_environment({"LXTRACE_COMPACT_OUTPUT" if compact else "LXTRACE_OUTPUT": str(template),
                                  "LXTRACE_RUN_ID": run_id, "LXTRACE_DISABLED": "0"})
     started = time.monotonic()
     observed = {}
@@ -146,29 +147,47 @@ def record_software(output, program, html=None, duration=None):
     manifest.update(status="reading", launcher_exit_code=code, exit_code=code,
                     wall_seconds=time.monotonic() - started)
     sessions, raw_contents = [], {}
-    for raw in sorted(raw_dir.glob("*.jsonl")):
+    for raw in sorted(raw_dir.glob("*.lxc" if compact else "*.jsonl")):
         item = {"path": str(raw), "filename": raw.name}
         try:
+            if compact:
+                from .compact import read_chunks, MAX_IMPORT_RECORDS, MAX_IMPORT_BYTES
+                # Reject oversized normalization before making raw/base64 copies.
+                # The original capture is retained for bounded inspect/select.
+                read_chunks(raw, max_records=MAX_IMPORT_RECORDS, max_bytes=MAX_IMPORT_BYTES)
             before = raw.stat()
             content = raw.read_bytes()
             after = raw.stat()
             item.update(size_bytes=len(content), sha256=hashlib.sha256(content).hexdigest(),
                         changed_during_read=(before.st_size, before.st_mtime_ns) !=
                         (after.st_size, after.st_mtime_ns))
-            text = content.decode("utf-8")
-            raw_contents["raw/software/" + raw.name] = text
+            text = base64.b64encode(content).decode('ascii') if compact else content.decode("utf-8")
+            raw_contents["raw/software/" + raw.name + ('.base64' if compact else '')] = text
             frozen = snapshot_dir / raw.name
             frozen.write_bytes(content)
             item["snapshot_path"] = str(frozen)
-            meta = _read_meta(text)
+            if compact:
+                from .compact import load_compact
+                with frozen.open('rb') as compact_file:
+                    compact_header = compact_file.read(32)
+                    import struct
+                    meta_size = struct.unpack_from('<I', compact_header, 24)[0]
+                    meta = json.loads(compact_file.read(meta_size).decode('utf-8'))
+                old = load_compact(frozen)
+                meta.update({key: old[key] for key in ('host_id', 'boot_id', 'run_id') if old.get(key)})
+            else:
+                meta = _read_meta(text)
+                old = load_sdk(frozen)
             if "%p" in raw.name:
                 raise ValueError("SDK did not expand %p; rebuild the SDK with per-process output template support")
             if meta.get("run_id") not in (None, "", run_id):
                 raise ValueError("SDK run_id does not match this capture")
             for identity in ("host_id", "boot_id"):
-                if meta.get(identity) and snapshot.get(identity) and meta[identity] != snapshot[identity]:
+                observed, expected = meta.get(identity), snapshot.get(identity)
+                if identity == 'host_id' and os.name == 'nt' and isinstance(observed, str) and isinstance(expected, str):
+                    observed, expected = observed.casefold(), expected.casefold()
+                if observed and expected and observed != expected:
                     raise ValueError("SDK %s does not match the locally launched host" % identity)
-            old = load_sdk(frozen)
             old.update(run_id=run_id,
                        host_id=meta.get("host_id") or snapshot.get("host_id"),
                        boot_id=meta.get("boot_id") or snapshot.get("boot_id"),
@@ -179,7 +198,7 @@ def record_software(output, program, html=None, duration=None):
                               "raw_file": raw.name, "capture_manifest": str(manifest_path),
                               "host_identity_source": "sdk_meta" if meta.get("host_id") else "local_launch_doctor",
                               "boot_identity_source": "sdk_meta" if meta.get("boot_id") else "local_launch_doctor"}
-            old["raw_files"] = {"capture/" + raw.name: text}
+            old.setdefault("raw_files", {})["capture/" + raw.name + ('.base64' if compact else '')] = text
             old["quality"].setdefault("warnings", [])
             if code or live_members or item["changed_during_read"] or not membership_verified:
                 old["quality"]["clean_shutdown"] = False

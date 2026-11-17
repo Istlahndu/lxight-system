@@ -189,6 +189,8 @@ python3 -m lxtrace record --profile task-pmu \
 
 ## 5. 接入推理引擎业务语义
 
+高线程数、长任务可选择新的 [高频采集与边界 PMU 接口](docs/high-frequency-sdk.md)：每线程无锁缓冲、16 字节普通记录、后台校验分段持久化及异常恢复，使用 `record --profile compact` 自动生成统一 HTML。Linux 可选每线程 cycles + 最多 8 个 RAW 事件的组读，保留读取窗口和原始整数。原 SDK、GFTRACE1/2 和生产归因功能继续可用；高频接口需在执行器中单独接入，不会自动改写旧 SDK 的调用。
+
 要将时间线对应到请求、prefill / decode、层、算子、显式通信及等待，在 C/C++ 引擎或执行器中接入 `sdk/lxtrace.h` 与 `sdk/lxtrace_adapter.h`。可在统一执行回调处完成适配，业务名称和边界由引擎提供。Python 推理程序可使用外部采集；业务打点需在其 C/C++ 原生执行路径接入，当前没有 Python 打点 SDK。
 
 重新编译并链接当前版本的 `sdk/lxtrace.cpp`，确保实际运行程序使用包含多进程输出与运行身份元数据的最新 SDK。已接入 SDK 的单进程程序或同节点启动器均使用正式 `record` 入口：
@@ -382,6 +384,6 @@ python3 -m lxtrace import --type schedule \
 
 Git 仓库保存软件源码、正式说明、配置、源码示例及回归测试。具体测试运行的日志、会话、离线报告、服务器环境记录和复现说明统一保存在 `artifacts/` 下，由 `.gitignore` 排除。现有实验的说明与完整复现步骤随对应 `artifacts/v2/` 实验目录保留；仓库中的通用使用步骤以本 README 和 SDK 接入指南为准。
 
-修改正式 Markdown 文档后，执行 `python -m pip install -r requirements-docs.txt`、`python tools/build_docs.py` 重建四份 HTML 并校验本地链接。运行软件无需安装此可选文档依赖。需要同步生成 `artifacts/v2/` 服务页面时，使用 `python tools/build_docs.py --served`。
+修改正式 Markdown 文档后，执行 `python -m pip install -r requirements-docs.txt`、`python tools/build_docs.py` 重建五份 HTML 并校验本地链接。运行软件无需安装此可选文档依赖。需要同步生成 `artifacts/v2/` 服务页面时，使用 `python tools/build_docs.py --served`。
 
 完整命令参数以 `python3 -m lxtrace COMMAND --help` 为准；将 `COMMAND` 替换为相应子命令。
