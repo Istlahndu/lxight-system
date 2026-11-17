@@ -83,7 +83,7 @@ GLM、DeepSeek 是被分析应用的模型类型。本版本提供通用采集�
 |---|---|
 | 环境检查 | `doctor` 记录资源拓扑、采集源访问状态及失败原因 |
 | 线程采样 | `proc-sample` 读取直接启动进程的线程状态、最后执行 CPU 与累计 CPU tick；不递归采集子进程 |
-| 任务计数 | `task-pmu` 通过 `perf_event_open` 采集自行启动进程树的用户态 cycles / instructions，保留 raw、enabled、running 与 scaled |
+| 任务计数 | `task-pmu` 通过 `perf_event_open` 采集自行启动进程树的用户态 cycles / instructions，保留 raw、enabled、running 与 scaled；复用放大值明确标为估计，排除在精确合计之外 |
 | 软件语义采集 | C ABI、C++11 RAII 及执行器回调适配接口，支持范围、帧、请求关联与跨线程上下文 |
 | 统一报告 | `record` 默认生成自包含 HTML；`report` 从单会话、同目录会话或多个输入生成统一报告，支持同节点同轮软件多进程时间线 |
 | 调度数据导入 | 按约定格式导入 switch JSONL，重建连续驻留并保留迁核、丢失、未知与未闭合状态 |
@@ -91,6 +91,8 @@ GLM、DeepSeek 是被分析应用的模型类型。本版本提供通用采集�
 | 交互分析 | 资源与线程选择、时间选区、缩放平移、事件搜索、软件执行轨及证据详情 |
 | 数据导出 | 自包含 HTML、原生会话 JSON、分析 JSON / CSV、Trace Event |
 | 会话管理 | `.lxtrace` 归档、原始文件 SHA-256 校验、派生数据与索引重建、历史软件记录导入 |
+
+GFTRACE1 软件事件导入支持连续子步骤切换：已知 SUB 站点的下一次开始可作为上一子步骤的结束边界，并保留边界依据。站点 1/2 为交换，4/6 为矩阵，3/5/7/8/9 为向量/标量；显式类别元数据仍优先，未知站点保持 unknown。帧元数据中的 `counting`、`parts`、`tokens` 会保留；缺少 `counting` 时不推断是否为计数帧。当前内置导入器不支持 GFTRACE2 的二进制及 PMU 数组。
 
 ### 2.2 业务类别与解释
 
@@ -164,6 +166,8 @@ python3 -m lxtrace record --profile task-pmu \
 ```
 
 该命令默认生成 `pmu.html`，也可通过 `--html PATH` 指定位置。该配置在采集区间内为每个事件记录一个聚合计数窗，通过计数器继承覆盖自行启动的进程及后代的用户态 cycles / instructions，采集寿命仍跟随直接启动进程。它不覆盖设备侧活动，也不等价于逐核利用率或硬件单元 busy。计数器访问失败时，查看能力报告中的具体原因。
+
+当 `running_ns < enabled_ns` 且计数器曾实际运行时，缩放值显示为 `multiplexed_estimate`，保留原始计数和时长，但不纳入精确合计。计数器未运行或时长无效时，计数结果显示不可用。选区切过计数窗时仍显示 `N/A`，不会按选区长度摊分估计值。
 
 ### 4.4 采集生命周期与配置选择
 

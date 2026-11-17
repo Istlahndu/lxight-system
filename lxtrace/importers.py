@@ -1,8 +1,9 @@
-"""Loss-aware SDK JSONL and frozen GFTRACE1 importers. No third-party packages.
+"""Loss-aware SDK JSONL and GFTRACE1 importers. No third-party packages.
 
 GFTRACE1 support is exactly the little-endian layout in gf_trace.h (2026-11-14
 local source). Its slot coordinates remain logical labels without an explicit,
-verified mapping. PUSH/SUB are API ranges, never fabricated async requests.
+verified mapping. Known SUB sites preserve software operation intent; chained
+SUB starts replace the active step. No API range fabricates an async request.
 """
 import hashlib
 import json
@@ -212,6 +213,16 @@ GF_PAIRS = {
     23: (24, "exchange", "cx", "subexchange.api"),
 }
 
+# The original exchange sites 1/2 retain their meaning. The producer's later
+# substep extension uses the same 16-byte event layout and adds sites 3..9.
+# These are software intent labels, not hardware activity boundaries.
+GF_SUB_SITES = {
+    1: ("push", "cx"), 2: ("gath", "cx"),
+    3: ("deqg", "vec"), 4: ("mmg", "mat"),
+    5: ("deqd", "vec"), 6: ("mmd", "mat"),
+    7: ("swi", "vec"), 8: ("pkg", "vec"), 9: ("pkd", "vec"),
+}
+
 
 def _metadata(path):
     if path is None:
@@ -223,7 +234,7 @@ def _metadata(path):
         raise ValueError("GFTRACE metadata does not exist: " + str(p))
     if p.suffix.lower() == ".json":
         return json.loads(p.read_text(encoding="utf-8")), {}, {}
-    stages, layers, categories, properties = {}, {}, {}, {}
+    stages, layers, categories, properties, frames = {}, {}, {}, {}, {}
     for line in p.read_text(encoding="utf-8").splitlines():
         words = line.split()
         if len(words) >= 3 and words[0] == "run":
@@ -238,10 +249,42 @@ def _metadata(path):
             layers[int(words[1])] = " ".join(words[2:])
         elif len(words) == 3 and words[0] == "category":
             categories[int(words[1])] = words[2]
+        elif words and words[0] == "frame":
+            if len(words) < 4 or words[2] != "counting" or words[3] not in ("0", "1") or len(words) % 2:
+                raise ValueError("invalid GFTRACE frame counting metadata")
+            frame = {"counting": words[3] == "1"}
+            for i in range(4, len(words), 2):
+                if words[i] not in ("parts", "tokens"):
+                    raise ValueError("invalid GFTRACE frame metadata field")
+                frame[words[i]] = _integer(int(words[i + 1]), "frame " + words[i])
+            frame_id = str(_integer(int(words[1]), "frame index"))
+            if frame_id in frames and frames[frame_id] != frame:
+                raise ValueError("conflicting GFTRACE frame counting metadata")
+            frames[frame_id] = frame
         elif len(words) == 2 and words[0] == "data_origin":
             properties["original_data_origin"] = words[1]
     properties["categories"] = categories
+    properties["frames"] = frames
     return properties, stages, layers
+
+
+def _gf_frame_metadata(meta):
+    if not isinstance(meta, dict):
+        raise ValueError("GFTRACE metadata must be an object")
+    frames = meta.get("frames", {})
+    if not isinstance(frames, dict):
+        raise ValueError("GFTRACE frames metadata must be an object")
+    for frame in frames.values():
+        if not isinstance(frame, dict):
+            raise ValueError("GFTRACE frame metadata must be an object")
+        if "counting" in frame:
+            counting = frame["counting"]
+            if not isinstance(counting, bool) and (type(counting) is not int or counting not in (0, 1)):
+                raise ValueError("invalid GFTRACE frame counting metadata")
+        for field in ("parts", "tokens"):
+            if field in frame:
+                _integer(frame[field], "frame " + field)
+    return frames
 
 
 def load_gftrace(path, metadata=None, mapping=None):
@@ -257,6 +300,7 @@ def load_gftrace(path, metadata=None, mapping=None):
     if metadata is None and path.with_suffix(".txt").exists():
         metadata = path.with_suffix(".txt")
     meta, stages, layers = _metadata(metadata)
+    frame_metadata = _gf_frame_metadata(meta)
     if meta.get("frequency_hz", frequency) != frequency:
         raise ValueError("GFTRACE1 metadata and binary clock frequency disagree")
     mappings = mapping if isinstance(mapping, dict) else json.loads(Path(mapping).read_text(encoding="utf-8")) if mapping else {}
@@ -314,14 +358,35 @@ def load_gftrace(path, metadata=None, mapping=None):
             ts = (tick - minimum) * 1000000000 // frequency
             if kind in GF_PAIRS:
                 endkind, eventkind, category, name = GF_PAIRS[kind]
+                previous_step = open_by_kind.get(23)
+                if (kind == 23 and previous_step is not None and stack
+                        and stack[-1] is previous_step
+                        and previous_step["args"]["code"] in GF_SUB_SITES
+                        and code in GF_SUB_SITES):
+                    # SUB_B is a mode switch in the producer. Only the active
+                    # top-level step can be replaced; never close an unrelated
+                    # wait or recover a crossing/malformed synchronous scope.
+                    stack.pop()
+                    del open_by_kind[23]
+                    previous_step.update(end_ts=ts, status="complete")
+                    previous_step["args"].update(
+                        raw_end_ticks=tick,
+                        end_boundary="next_sub_begin",
+                        end_boundary_event_index=index,
+                    )
                 eid = "gf:%s:%d" % (key, index)
                 if kind == 1:
                     name += ":" + str(layers.get(code, "layer.%d" % code))
                 if kind == 9:
                     name = "frame.%d" % aux
+                if kind == 23:
+                    mode, category = GF_SUB_SITES.get(code, ("site.%d" % code, "unknown"))
+                    name = "subexchange.api" if code in (1, 2) else "substep." + mode
                 category = categories.get(str(kind), categories.get(kind, category))
                 if category not in ("mat", "vec", "cc", "cx", "wait", "drv", "unknown"):
                     category = "unknown"
+                if kind == 23:
+                    eventkind = "exchange" if category == "cx" else "wait" if category == "wait" else "range"
                 e = {"event_id": eid, "thread_id": thread_key, "pid": thread["pid"], "tid": thread["tid"],
                      "kind": eventkind, "category": category, "name": name,
                      "begin_ts": ts, "end_ts": None, "parent_id": stack[-1]["event_id"] if stack else None,
@@ -332,6 +397,15 @@ def load_gftrace(path, metadata=None, mapping=None):
                     frame_id = eid
                     e["frame_id"] = eid
                     e["args"]["driver_calls_complete"] = False
+                    declared_frame = frame_metadata.get(str(aux), frame_metadata.get(aux, {}))
+                    if "counting" in declared_frame:
+                        e["args"].update(counting=bool(declared_frame["counting"]), counting_source="frame_metadata")
+                    for field in ("parts", "tokens"):
+                        if field in declared_frame:
+                            e["args"][field] = _integer(declared_frame[field], "frame " + field)
+                if kind == 23:
+                    e["args"].update(substep_mode=mode,
+                                     category_source="metadata" if str(kind) in categories or kind in categories else "sub_site_table" if code in GF_SUB_SITES else "unknown_site")
                 if eventkind == "wait":
                     e["args"]["wait_object"] = stages.get(code, "site.%d" % code)
                 if kind in open_by_kind:

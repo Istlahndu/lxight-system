@@ -30,6 +30,7 @@ def serve(directory, port):
 
 
 def export_trace(s):
+    from .resource import _counter_window
     events = []
     for r in s['records']:
         base = dict(name=r.get('name', r['category']), cat=r['layer']+'.'+r['category'],
@@ -46,7 +47,16 @@ def export_trace(s):
         elif r['representation'] == 'interval':
             events.append(dict(base, ph='i', s='t', ts=r['begin_ns']/1000,
                                name=base['name']+' · incomplete'))
-        elif r['representation'] in ('sample', 'counter_window'):
+        elif r['representation'] == 'counter_window':
+            counter = _counter_window(r, *s['time_range'])
+            base['args'] = dict(r, selection_value=counter['selection_value'],
+                                selection_status=counter['selection_status'],
+                                counter_status=counter['counter_status'],
+                                included_in_totals=counter['included_in_totals'],
+                                semantics='point annotates counter read window; not activity begin/end')
+            events.append(dict(base, ph='i', s='t', ts=r['begin_ns']/1000,
+                               name=base['name']+' · 计数窗'))
+        elif r['representation'] == 'sample':
             events.append(dict(base, ph='i', s='t', ts=r.get('timestamp_ns', r.get('begin_ns', 0))/1000))
     events.sort(key=lambda event: event['ts'])
     return dict(traceEvents=events, displayTimeUnit='ms', lxtrace_native=s,

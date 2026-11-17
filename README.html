@@ -120,7 +120,7 @@ python3 -m lxtrace record --profile proc-sample \
 </tr>
 <tr>
 <td>任务计数</td>
-<td><code>task-pmu</code> 通过 <code>perf_event_open</code> 采集自行启动进程树的用户态 cycles / instructions，保留 raw、enabled、running 与 scaled</td>
+<td><code>task-pmu</code> 通过 <code>perf_event_open</code> 采集自行启动进程树的用户态 cycles / instructions，保留 raw、enabled、running 与 scaled；复用放大值明确标为估计，排除在精确合计之外</td>
 </tr>
 <tr>
 <td>软件语义采集</td>
@@ -152,6 +152,7 @@ python3 -m lxtrace record --profile proc-sample \
 </tr>
 </tbody>
 </table></div>
+<p>GFTRACE1 软件事件导入支持连续子步骤切换：已知 SUB 站点的下一次开始可作为上一子步骤的结束边界，并保留边界依据。站点 1/2 为交换，4/6 为矩阵，3/5/7/8/9 为向量/标量；显式类别元数据仍优先，未知站点保持 unknown。帧元数据中的 <code>counting</code>、<code>parts</code>、<code>tokens</code> 会保留；缺少 <code>counting</code> 时不推断是否为计数帧。当前内置导入器不支持 GFTRACE2 的二进制及 PMU 数组。</p>
 <h3 id="22">2.2 业务类别与解释</h3>
 <p>以下软件范围需由应用或引擎显式标记。范围的起止表示调用经过时间，其间可能包含调度换出与硬件停顿。</p>
 <div class="table-wrap"><table>
@@ -241,6 +242,7 @@ python3 -m lxtrace doctor --output &quot;$run_dir/capability.json&quot;
   /path/to/inference-python /path/to/inference.py --model /path/to/model
 </code></pre>
 <p>该命令默认生成 <code>pmu.html</code>，也可通过 <code>--html PATH</code> 指定位置。该配置在采集区间内为每个事件记录一个聚合计数窗，通过计数器继承覆盖自行启动的进程及后代的用户态 cycles / instructions，采集寿命仍跟随直接启动进程。它不覆盖设备侧活动，也不等价于逐核利用率或硬件单元 busy。计数器访问失败时，查看能力报告中的具体原因。</p>
+<p>当 <code>running_ns &lt; enabled_ns</code> 且计数器曾实际运行时，缩放值显示为 <code>multiplexed_estimate</code>，保留原始计数和时长，但不纳入精确合计。计数器未运行或时长无效时，计数结果显示不可用。选区切过计数窗时仍显示 <code>N/A</code>，不会按选区长度摊分估计值。</p>
 <h3 id="44">4.4 采集生命周期与配置选择</h3>
 <p>一次 <code>record</code> 选择一个配置。不同配置启动的是不同运行，结果不会自动关联为同一次推理执行。<code>basic</code> 支持同节点 SDK 多进程采集与统一报告，启动器必须等待所有工作进程正常退出；使用方法见下一节。<code>proc-sample</code> 不递归采集子进程；若启动的是 torchrun、vLLM 等多进程启动器，可能只观测到启动器自身线程，需针对实际工作进程安排启动方式。<code>task-pmu</code> 可继承后代计数，但启动器退出后采集也会结束。当前不支持多节点统一采集与未经校时的多节点报告；已存在服务、远端 rank、独立守护进程与设备活动不在上述保证范围内。</p>
 <p><code>proc-sample</code>、<code>task-pmu</code> 等外部配置的 <code>record --duration 30s</code> 在指定时长后停止采集，仍运行的业务会继续运行。<code>business_exit=None</code> 表示尚未观察到业务退出；业务的最终退出由其作业或服务管理机制负责。<code>basic</code> 不支持 <code>--duration</code>，指定时会在业务启动前拒绝执行；SDK 记录依赖各工作进程正常落盘。</p>

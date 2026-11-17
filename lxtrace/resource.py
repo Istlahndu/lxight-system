@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 from .core import union, intersection, subtract, length
 
 SCHEMA = "lxtrace.resource-session.v2"
-ANALYSIS_RULES_VERSION = "resource-v2.0.0-demo"
+ANALYSIS_RULES_VERSION = "resource-v2.0.1-demo"
 INDEX_VERSION = "resource-index.v2.0.0-demo"
 CATEGORIES = ("mat", "vec", "mem", "cc", "cx", "fe", "wait", "drv")
 STATES = ("target", "other", "idle", "unknown")
@@ -356,6 +356,46 @@ def _hardware_overlap(s, records, start, end):
     return out
 
 
+def _counter_window(record, start, end):
+    """Keep window coverage separate from perf's counter-running coverage."""
+    r = copy.deepcopy(record)
+    complete = r["end_ns"] is not None
+    full = complete and r["begin_ns"] >= start and r["end_ns"] <= end
+
+    def number(value):
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value >= 0)
+
+    enabled, running = r.get("enabled_ns"), r.get("running_ns")
+    timing_reported = "enabled_ns" in r or "running_ns" in r
+    status = "not_reported"
+    if timing_reported:
+        if not number(enabled) or not number(running) or running > enabled:
+            status = "counter_timing_unavailable"
+        elif running == 0:
+            status = "counter_not_running"
+        else:
+            status = "multiplexed_estimate" if running < enabled else "not_multiplexed"
+    scaled = next((r[k] for k in ("scaled_count", "scaled") if number(r.get(k))), None)
+    raw = next((r[k] for k in ("raw_count", "raw", "value") if number(r.get(k))), None)
+    value = scaled if scaled is not None else raw
+    if status == "multiplexed_estimate" and scaled is None and raw is not None:
+        value = raw * enabled / running
+    if status in ("counter_not_running", "counter_timing_unavailable"):
+        value = None
+    r["counter_status"] = status
+    r["window_value"] = value
+    r["window_fully_selected"] = full
+    r["selection_status"] = (
+        "open_window" if not complete else "crosses_selection" if not full
+        else status if status in ("multiplexed_estimate", "counter_not_running", "counter_timing_unavailable")
+        else "complete_window")
+    r["included_in_totals"] = full and value is not None and status in ("not_reported", "not_multiplexed")
+    r["selection_value"] = value if full else None
+    r["selected_value"] = r["selection_value"]
+    return r
+
+
 def analyze_resources(session, start=None, end=None, resource_id=None):
     """Conserve allocated CPU time and keep counters, samples and activities separate."""
     s = validate_session(session)
@@ -380,15 +420,7 @@ def analyze_resources(session, start=None, end=None, resource_id=None):
     for record in relevant:
         if record["representation"] != "counter_window":
             continue
-        r = copy.deepcopy(record)
-        complete = r["end_ns"] is not None
-        included = complete and r["begin_ns"] >= start and r["end_ns"] <= end
-        r["selection_status"] = "complete_window" if included else "crosses_selection" if complete else "open_window"
-        r["included_in_totals"] = included
-        r["selection_value"] = r.get("scaled_count", r.get("scaled", r.get("raw_count", r.get("raw", r.get("value"))))) if included else None
-        r["selected_value"] = r["selection_value"]
-        r["window_fully_selected"] = included
-        counters.append(r)
+        counters.append(_counter_window(record, start, end))
     sources = {x["source_id"]: x for x in s["sources"]}
     categories = []
     for category in CATEGORIES:
@@ -409,8 +441,12 @@ def analyze_resources(session, start=None, end=None, resource_id=None):
         warnings.append("Allocation is unverified; no CPU capacity is certified.")
     if totals["unknown_cpu_ns"]:
         warnings.append("Unknown scheduler time is retained; missing data is not idle.")
-    if any(x["selection_status"] != "complete_window" for x in counters):
+    if any(not x["window_fully_selected"] for x in counters):
         warnings.append("Partial counter windows retain their full boundaries and are not prorated.")
+    if any(x["counter_status"] == "multiplexed_estimate" for x in counters):
+        warnings.append("Multiplexed counter values are scaled estimates, excluded from exact totals.")
+    if any(x["counter_status"] in ("counter_not_running", "counter_timing_unavailable") for x in counters):
+        warnings.append("Counter did not run or enabled/running timing is invalid or incomplete; selection value is unavailable.")
     if s["data_origin"] == "synthetic":
         warnings.append("Synthetic fixture validates analysis and presentation, not live hardware capability.")
     allocation_known = str(s["allocation"].get("status", "")).startswith("verified")
