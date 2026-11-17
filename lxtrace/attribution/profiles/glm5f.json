@@ -1,0 +1,40 @@
+{
+  "schema_version": "lxtrace.attribution-model.v1",
+  "profile_id": "glm5f",
+  "model": "GLM-5.3-Flash",
+  "engine": "glm5f merged prefill",
+  "revision": "glm5f-dsub@148a1202",
+  "exchange_stages": ["swiglu_ag", "combine", "kda_rs", "comb_wait", "comb_push", "dsa_rs", "hc_push", "hc_wait", "xwait", "x3_gather"],
+  "compute_modes": ["busy", "deqg", "mmg", "deqd", "mmd", "swi", "pkg", "pkd"],
+  "exchange_modes": ["push", "gath"],
+  "wait_modes": ["bar", "xw", "spin"],
+  "idle_modes": ["idle"],
+  "mode_labels": {
+    "busy": "领活与其他未细分工作",
+    "push": "显式推送交换",
+    "gath": "显式收集交换",
+    "bar": "屏障等待",
+    "xw": "跨域完成等待",
+    "spin": "自旋等待",
+    "idle": "调用间（引擎语义）",
+    "deqg": "gate/up 反量化",
+    "mmg": "gate/up 矩阵块",
+    "deqd": "down 反量化",
+    "mmd": "down 矩阵块",
+    "swi": "SwiGLU 向量运算",
+    "pkg": "gate/up X3 打包",
+    "pkd": "down X3 打包"
+  },
+  "expected_pool_threads": 592,
+  "dense": {"stage": "dense_gemm", "matrix_steps": {"mmg": 8, "mmd": 6}},
+  "stage_families": {
+    "expert": ["router", "group", "gate_up", "swiglu_ag", "down", "combine", "moe_sum", "comb_wait", "comb_acc", "comb_push", "x3_gather"],
+    "dense": ["dense_gemm"],
+    "shared": ["sh_gate_up", "sh_down"],
+    "KDA": ["kda_proj", "kda_fb_conv", "kda_core", "kda_gnorm", "kda_oproj", "kda_rs"],
+    "DSA": ["dsa_qkv", "dsa_q", "dsa_index", "dsa_attn", "dsa_oproj", "dsa_rs", "dsa_gather", "dsa_qk", "dsa_softmax", "dsa_pv", "dsa_out", "dsa_vproj", "dsa_ix_pool", "dsa_ix_score", "dsa_ix_select"],
+    "entry_exit": ["entry", "hc_a", "hc_f", "hc_push", "hc_wait", "hc_norm", "attn_exit", "ffn_exit"]
+  },
+  "flop_policy": "The numerator must come from the model adapter for the same complete measurement window. No FLOP is inferred from observed MOPA or a golden MFU percentage.",
+  "provenance": [{"source": "glm5f-dsub@148a1202; GLM-5.3-Flash handoff plugin 2026-11-16", "scope": "phase/mode classification and dense K chunks"}]
+}

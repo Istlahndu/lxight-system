@@ -118,6 +118,19 @@ def make_parser():
     q.add_argument('--output', required=True, help='self-contained HTML report')
     q.add_argument('--session-output', help='also save the merged native .lxtrace archive or JSON')
     q.add_argument('--run-id', help='explicit run grouping for older sessions without a shared run ID')
+    q = c.add_parser('production-report', help='derive calibrated production attribution from separate timing/counting runs')
+    source = q.add_mutually_exclusive_group(required=True)
+    source.add_argument('--timing', help='ticks-only GFTRACE2 timing run; counting runs align by logical work, not timestamps')
+    source.add_argument('--mfu-counts', help='standalone complete-window MFU summary JSON; not mixed with another trace configuration')
+    q.add_argument('--count', action='append', default=[], metavar='RUN=PATH', help='GFTRACE2 counting run, repeat in event-priority order')
+    q.add_argument('--hardware', help='versioned hardware profile name or JSON path')
+    q.add_argument('--model', help='engine/model profile name or JSON path')
+    q.add_argument('--strict-alignment', action='store_true', help='reject rate fallback when dynamic work changes a block/mode key')
+    q.add_argument('--bin-ms', type=float, default=0.2, help='aggregate projection bin size in milliseconds (default: 0.2)')
+    q.add_argument('--reference', help='optional external reference JSON, displayed separately and never used to compute results')
+    q.add_argument('--output', required=True, help='self-contained production attribution HTML')
+    q.add_argument('--analysis-output', help='analysis JSON (defaults to OUTPUT.analysis.json)')
+    q.add_argument('--evidence-output', help='optional resource .lxtrace archive of calibrated aggregate evidence')
     q = c.add_parser('bundle-viewer'); q.add_argument('session'); q.add_argument('--output', required=True)
     q = c.add_parser('serve'); q.add_argument('--port', type=int, default=8765)
     q.add_argument('--directory', default='artifacts/v2')
@@ -169,6 +182,10 @@ def main(argv=None):
             from .report import write_unified_report
             session = write_unified_report(args.inputs, args.output, args.session_output, args.run_id)
             print('records='+str(len(session['records']))+' html='+str(args.output))
+        elif args.command == 'production-report':
+            from .attribution.workflow import run_report
+            analysis = run_report(args)
+            print('attribution='+str(analysis['schema_version'])+' html='+str(args.output))
         elif args.command == 'demo':
             s = R.demo_session(args.case); R.write_session(s, args.output)
             if args.html: R.write_report(s, args.html)

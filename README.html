@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>灵晟 LX2 性能分析器 · 使用指南</title><style>
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#eef3f6;color:#203647;font:16px/1.85 "Segoe UI","Microsoft YaHei",sans-serif}main{max-width:1140px;margin:28px auto;background:#fff;border-top:5px solid #087f8c;padding:30px 46px 48px;box-shadow:0 3px 18px #18364710}h1{font-size:30px;line-height:1.4;margin:28px 0 20px}h2{font-size:23px;margin-top:40px;padding-top:8px;border-top:1px solid #e1e8ec}h3{font-size:18px;margin-top:28px}a{color:#087887;text-underline-offset:3px}a:hover{color:#03505b}p{margin:15px 0}code,pre{font:13px/1.7 Consolas,"Microsoft YaHei",monospace}code{background:#edf3f5;padding:2px 5px;border-radius:3px;overflow-wrap:anywhere}pre{background:#173446;color:#e5f0f4;padding:18px 20px;border-radius:5px;overflow:auto;tab-size:4}pre code{background:none;padding:0;color:inherit;overflow-wrap:normal}.table-wrap{overflow:auto;margin:20px 0}table{width:100%;border-collapse:collapse;font-size:14px;line-height:1.75}th,td{border:1px solid #d5e1e7;padding:10px 12px;text-align:left;vertical-align:top}th{background:#e8f2f4;color:#16586a}tbody tr:nth-child(even){background:#f7fafb}td:first-child{min-width:105px}nav{display:flex;gap:10px;flex-wrap:wrap}nav a{background:#e8f3f5;border:1px solid #c8e0e5;padding:5px 13px;border-radius:4px;text-decoration:none;font-size:14px}nav a:first-child{background:#087f8c;color:#fff;border-color:#087f8c}.toc-panel{margin-top:24px;background:#f4f8fa;border:1px solid #dce6ec;padding:10px 18px;border-radius:5px}.toc-panel summary{cursor:pointer;font-weight:600}.toc-panel ul{margin:8px 0;padding-left:22px}.toc-panel li{font-size:14px;margin:2px 0}.toc-panel ul ul{display:none}.footer{border-top:1px solid #dce6ec;margin-top:36px;padding-top:14px;font-size:13px;color:#587080}h1,h2,h3{scroll-margin-top:20px}@media(max-width:700px){body{font-size:15px}main{margin:0;padding:20px 18px 32px}h1{font-size:25px}h2{font-size:21px}pre{padding:14px}th,td{padding:8px;min-width:140px}nav{gap:6px}}@media print{body{background:#fff}main{box-shadow:none;margin:0;max-width:none;padding:10px}nav,.toc-panel{display:none}pre{white-space:pre-wrap;background:#f1f4f6;color:#203647}a{color:inherit}table{font-size:11px}.table-wrap{overflow:visible}}
-</style></head><body><main><nav aria-label="文档导航"><a href="README.html">使用说明</a><a href="docs/sdk-quickstart.html">SDK 接入</a><a href="docs/scheduler-interchange.html">调度数据格式</a></nav><details class="toc-panel"><summary>本页目录</summary><div class="toc">
+</style></head><body><main><nav aria-label="文档导航"><a href="README.html">使用说明</a><a href="docs/sdk-quickstart.html">SDK 接入</a><a href="docs/scheduler-interchange.html">调度数据格式</a><a href="docs/production-attribution.html">生产归因</a></nav><details class="toc-panel"><summary>本页目录</summary><div class="toc">
 <ul>
 <li><a href="#_1">快速开始</a></li>
 <li><a href="#1">1. 产品用途与接入方式</a></li>
@@ -333,7 +333,7 @@ python3 -m lxtrace report /path/to/rank0.lxtrace /path/to/rank1.lxtrace \
   --output &quot;$run_dir/ranks.html&quot; --session-output &quot;$run_dir/ranks.lxtrace&quot;
 </code></pre>
 <p>软件多进程汇集要求输入具有可比较的同主机、同 boot <code>CLOCK_MONOTONIC</code> 时钟身份与明确的运行归属。存在不同 <code>run_id</code> 时，工具会要求使用 <code>--run-id explicit-group</code> 显式声明分组；旧会话缺少运行身份时也必须提供该参数。分组声明不会校正时钟，未经校时的多节点输入仍会拒绝处理。报告不通过帧号或屏障对齐，也不会把不同配置、不同运行的数据默认视为同次执行。</p>
-<p>CNTVCT 输入也可汇集，要求同一已知 <code>host_id</code>、<code>boot_id</code>、计数器域和频率。时间由原始整数 tick 重算到共同原点，保留 <code>native_clock_id=CNTVCT_EL0</code>；含 PMU 的输入还必须具有相同 <code>run_id</code>。<code>--run-id</code> 不能将分别执行的计数运行伪装成同次采集，也不能校准 CNTVCT 与 <code>CLOCK_MONOTONIC</code>。tT、tA、tB、tV 应分别保存与查看；本版本尚未提供跨运行计数比率搬运或模型推算分解。</p>
+<p>CNTVCT 输入也可汇集，要求同一已知 <code>host_id</code>、<code>boot_id</code>、计数器域和频率。时间由原始整数 tick 重算到共同原点，保留 <code>native_clock_id=CNTVCT_EL0</code>；含 PMU 的输入还必须具有相同 <code>run_id</code>。<code>--run-id</code> 不能将分别执行的计数运行伪装成同次采集，也不能校准 CNTVCT 与 <code>CLOCK_MONOTONIC</code>。<code>report</code> 保留此规则；分开执行的 tT、tA、tB、tV 使用独立的 <a href="docs/production-attribution.html"><code>production-report</code> 归因流程</a>，按工作块搬运计数比率并保留模型推算标识。</p>
 <pre><code class="language-sh"># 仅在已核对输入确属同一可比较采集组后显式声明；旧会话必须声明。
 python3 -m lxtrace report /path/to/old-rank0.lxtrace /path/to/old-rank1.lxtrace \
   --output &quot;$run_dir/group.html&quot; --session-output &quot;$run_dir/group.lxtrace&quot; \
@@ -358,6 +358,10 @@ run_id INFERENCE_RUN_ID
 counter_domain_id CNTVCT_EL0
 </code></pre>
 <p>计数窗口表示两次读数之间的累计差，不代表矩阵、访存或通信硬件活动的起止。计数运行包含读取计数器的开销；性能时间应取独立的只读时钟运行。导入已有 GFTRACE2 文件不需要 root，但产生特定硬件 PMU 事件的数据仍取决于计算节点权限。</p>
+<p>对分别采集的 tT 与 tA/tB/tV，可使用独立的生产归因入口：</p>
+<pre><code class="language-sh">python3 -m lxtrace production-report --timing capture/trace-tT.bin --count tA=capture/trace-tA.bin --count tB=capture/trace-tB.bin --count tV=capture/trace-tV.bin --output out/production.html
+</code></pre>
+<p>该命令生成固定模板 HTML 与完整分析 JSON，提供工作块对齐、推算上下界、三种分解、dense 归因及 MFU 图。模型推算保持聚合证据，时间图是 tT 上的估计量投影；截取数据不会冒充全机 MFU。输入配置、缺失计数、回退与来源均保留，无新增 root 权限或必需依赖。完整输入格式与 MFU 汇总入口见 <a href="docs/production-attribution.html">生产归因报告使用指南</a>。原有 <code>report</code> 仍用于单轮统一流水线。</p>
 <h3 id="64">6.4 命令行分析与文件交换</h3>
 <pre><code class="language-sh"># 指定选区；时间单位支持 ns、us、ms、s，不写单位按纳秒处理。
 python3 -m lxtrace analyze &quot;$run_dir/session.lxtrace&quot; \
@@ -476,6 +480,10 @@ python3 -m lxtrace rebuild &quot;$run_dir/session.lxtrace&quot; \
 <td>引擎开发者的编译、打点与采集流程</td>
 </tr>
 <tr>
+<td><a href="docs/production-attribution.html">生产归因报告使用指南</a></td>
+<td>分离计时／计数运行的对齐、三种分解、dense 与 MFU</td>
+</tr>
+<tr>
 <td><a href="docs/scheduler-interchange.html">调度流导入说明</a></td>
 <td>外部调度数据接入格式与解释规则</td>
 </tr>
@@ -486,5 +494,5 @@ python3 -m lxtrace rebuild &quot;$run_dir/session.lxtrace&quot; \
 </tbody>
 </table></div>
 <p>Git 仓库保存软件源码、正式说明、配置、源码示例及回归测试。具体测试运行的日志、会话、离线报告、服务器环境记录和复现说明统一保存在 <code>artifacts/</code> 下，由 <code>.gitignore</code> 排除。现有实验的说明与完整复现步骤随对应 <code>artifacts/v2/</code> 实验目录保留；仓库中的通用使用步骤以本 README 和 SDK 接入指南为准。</p>
-<p>修改正式 Markdown 文档后，执行 <code>python -m pip install -r requirements-docs.txt</code>、<code>python tools/build_docs.py</code> 重建三份 HTML 并校验本地链接。运行软件无需安装此可选文档依赖。需要同步生成 <code>artifacts/v2/</code> 服务页面时，使用 <code>python tools/build_docs.py --served</code>。</p>
+<p>修改正式 Markdown 文档后，执行 <code>python -m pip install -r requirements-docs.txt</code>、<code>python tools/build_docs.py</code> 重建四份 HTML 并校验本地链接。运行软件无需安装此可选文档依赖。需要同步生成 <code>artifacts/v2/</code> 服务页面时，使用 <code>python tools/build_docs.py --served</code>。</p>
 <p>完整命令参数以 <code>python3 -m lxtrace COMMAND --help</code> 为准；将 <code>COMMAND</code> 替换为相应子命令。</p><p class="footer">灵晟 LX2 性能分析器 · 0.2.0-demo · 使用文档</p></main></body></html>

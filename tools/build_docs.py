@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the three formal HTML guides from Markdown and verify local links."""
+"""Build formal HTML guides from Markdown and verify local links."""
 import argparse
 import html
 import os
@@ -22,15 +22,16 @@ SPECS = (
     ('README.md', 'README.html', 'usage.html', '灵晟 LX2 性能分析器 · 使用指南'),
     ('docs/sdk-quickstart.md', 'docs/sdk-quickstart.html', 'sdk-quickstart.html', 'LX2 性能分析器 · C/C++ SDK 接入指南'),
     ('docs/scheduler-interchange.md', 'docs/scheduler-interchange.html', 'scheduler-interchange.html', 'LX2 性能分析器 · 调度流导入格式'),
+    ('docs/production-attribution.md', 'docs/production-attribution.html', 'production-attribution.html', 'LX2 性能分析器 · 生产归因报告'),
 )
 
 
 def links_for(source, served):
     if served:
-        return [('usage.html', '使用说明'), ('sdk-quickstart.html', 'SDK 接入'), ('scheduler-interchange.html', '调度数据格式')]
+        return [('usage.html', '使用说明'), ('sdk-quickstart.html', 'SDK 接入'), ('scheduler-interchange.html', '调度数据格式'), ('production-attribution.html', '生产归因')]
     prefix = '../' if source.startswith('docs/') else ''
     docs = '' if prefix else 'docs/'
-    return [(prefix + 'README.html', '使用说明'), (docs + 'sdk-quickstart.html', 'SDK 接入'), (docs + 'scheduler-interchange.html', '调度数据格式')]
+    return [(prefix + 'README.html', '使用说明'), (docs + 'sdk-quickstart.html', 'SDK 接入'), (docs + 'scheduler-interchange.html', '调度数据格式'), (docs + 'production-attribution.html', '生产归因')]
 
 
 def rewrite_href(match, source, target, served):
@@ -85,7 +86,7 @@ def verify(outputs):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--served', action='store_true', help='Also generate the three existing artifacts/v2 HTML entry points and their support contracts')
+    parser.add_argument('--served', action='store_true', help='Also generate artifacts/v2 HTML entry points and their support contracts')
     args = parser.parse_args()
     outputs = []
     for source, formal, served, title in SPECS:

@@ -1,0 +1,39 @@
+{
+  "schema_version": "lxtrace.attribution-hardware.v1",
+  "profile_id": "lx2-profiled-v1",
+  "chip": "LX2 608-core AArch64, SVE/SME, default 1.55 GHz",
+  "revision": "2026-11-16-reference-compatible",
+  "facts": {
+    "cores": 608,
+    "frequency_hz": 1550000000,
+    "cycles_per_mopa": 2,
+    "flop_per_mopa": 1024,
+    "cache_line_bytes": 64,
+    "sve_per_cycle": 2,
+    "sve_load_per_cycle": 2,
+    "l2_bytes_per_cycle": 63.5,
+    "beyond_l2_bytes_per_cycle": 5.8,
+    "ipc_peak": 3.4
+  },
+  "calibration": {
+    "rho12": 0.3,
+    "rho2": 0.22,
+    "rho_range": [[0.28, 0.2], [0.32, 0.44]],
+    "branch_penalty": 16,
+    "l1i_penalty": 15,
+    "l2i_penalty": 200,
+    "snoop_latency": 200,
+    "cross_package_latency": 527,
+    "local_fill_latency": 215,
+    "za_input": [66, 73],
+    "za_output": [90, 128],
+    "za_output_last": [90, 158],
+    "mopa_per_pass": 1024,
+    "dense_fe_refill_rates": {"0x0001": 0.000007, "0x0028": 0.000006}
+  },
+  "provenance": [
+    {"source": "mfu-kit-tl3@09d3036a mfukit/hw/hw.json", "scope": "cores, frequency, BFMOPA, unit throughput, cache line and bandwidth", "jobs": [2117625, 2117626, 2141955]},
+    {"source": "glm5f-tl3@850d5a0f glm5f/c/py/gf_pmu.py", "scope": "profile-D rho, FE and fill-source latency model", "jobs": [2094120, 2094264], "note": "The 200/527/215-cycle source weights intentionally retain the profile-D calibration used by the supplied golden. They are not silently replaced by the newer hardware-table latency measurements."},
+    {"source": "glm5f-dsub@148a1202 glm5f/c/py/gf_dsub.py", "scope": "dense ZA bounds and low-perturbation instruction-refill rates", "jobs": [2117697, 2117699]}
+  ]
+}

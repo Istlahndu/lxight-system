@@ -37,7 +37,9 @@ PMU inputs must also share their original run_id. Grouping cannot calibrate
 CNTVCT to CLOCK_MONOTONIC or align separate counting runs. ticks-only zero arrays
 are not hardware counter measurements. Counter windows never imply hardware busy
 boundaries. Cross-run ratio transfer and model-derived category splits are not
-implemented by this native import path.
+implemented by this native import path. The separate production-report command
+aligns logical timing/counting work and emits calibrated aggregates; it does not
+change native import or merge semantics.
 
 The user-space SDK validates JSON object metadata before writing JSONL. Invalid
 arguments are marked and counted without deleting their range. Shutdown quality
@@ -46,3 +48,11 @@ marked cumulative quality snapshots are not summed; historical delta rows stay
 compatible. Exceptions to completeness remain partial in archives and reports.
 The existing fork policy remains child-disabled-until-exec after SDK first use,
 with the parent conservatively partial. No new privileged access is required.
+
+Production attribution is an offline, standard-library-only workflow. Raw counts,
+counting-run cycles, fallback basis, versioned calibration and bounds are retained.
+Matrix-first and issuer partitions conserve their declared cycle scope; unit
+utilizations may overlap. Timeline bins are uniform aggregate projections on tT,
+not verified hardware activity intervals. Partial pool coverage does not certify
+whole-machine MFU. Standalone complete-window MFU summaries and external reference
+values remain separate from trace results with different configurations.

@@ -270,7 +270,7 @@ python3 -m lxtrace report /path/to/rank0.lxtrace /path/to/rank1.lxtrace \
 
 软件多进程汇集要求输入具有可比较的同主机、同 boot `CLOCK_MONOTONIC` 时钟身份与明确的运行归属。存在不同 `run_id` 时，工具会要求使用 `--run-id explicit-group` 显式声明分组；旧会话缺少运行身份时也必须提供该参数。分组声明不会校正时钟，未经校时的多节点输入仍会拒绝处理。报告不通过帧号或屏障对齐，也不会把不同配置、不同运行的数据默认视为同次执行。
 
-CNTVCT 输入也可汇集，要求同一已知 `host_id`、`boot_id`、计数器域和频率。时间由原始整数 tick 重算到共同原点，保留 `native_clock_id=CNTVCT_EL0`；含 PMU 的输入还必须具有相同 `run_id`。`--run-id` 不能将分别执行的计数运行伪装成同次采集，也不能校准 CNTVCT 与 `CLOCK_MONOTONIC`。tT、tA、tB、tV 应分别保存与查看；本版本尚未提供跨运行计数比率搬运或模型推算分解。
+CNTVCT 输入也可汇集，要求同一已知 `host_id`、`boot_id`、计数器域和频率。时间由原始整数 tick 重算到共同原点，保留 `native_clock_id=CNTVCT_EL0`；含 PMU 的输入还必须具有相同 `run_id`。`--run-id` 不能将分别执行的计数运行伪装成同次采集，也不能校准 CNTVCT 与 `CLOCK_MONOTONIC`。`report` 保留此规则；分开执行的 tT、tA、tB、tV 使用独立的 [`production-report` 归因流程](docs/production-attribution.md)，按工作块搬运计数比率并保留模型推算标识。
 
 ```sh
 # 仅在已核对输入确属同一可比较采集组后显式声明；旧会话必须声明。
@@ -306,6 +306,14 @@ counter_domain_id CNTVCT_EL0
 ```
 
 计数窗口表示两次读数之间的累计差，不代表矩阵、访存或通信硬件活动的起止。计数运行包含读取计数器的开销；性能时间应取独立的只读时钟运行。导入已有 GFTRACE2 文件不需要 root，但产生特定硬件 PMU 事件的数据仍取决于计算节点权限。
+
+对分别采集的 tT 与 tA/tB/tV，可使用独立的生产归因入口：
+
+```sh
+python3 -m lxtrace production-report --timing capture/trace-tT.bin --count tA=capture/trace-tA.bin --count tB=capture/trace-tB.bin --count tV=capture/trace-tV.bin --output out/production.html
+```
+
+该命令生成固定模板 HTML 与完整分析 JSON，提供工作块对齐、推算上下界、三种分解、dense 归因及 MFU 图。模型推算保持聚合证据，时间图是 tT 上的估计量投影；截取数据不会冒充全机 MFU。输入配置、缺失计数、回退与来源均保留，无新增 root 权限或必需依赖。完整输入格式与 MFU 汇总入口见 [生产归因报告使用指南](docs/production-attribution.md)。原有 `report` 仍用于单轮统一流水线。
 
 ### 6.4 命令行分析与文件交换
 
@@ -368,11 +376,12 @@ python3 -m lxtrace import --type schedule \
 | `artifacts/` | 本地采集产物、测试记录、复现说明与临时文件，不纳入 Git 管理 |
 | `artifacts/local-docs/` | 已归档的测试说明与历史实验文档，不纳入 Git 管理 |
 | [SDK 接入指南](docs/sdk-quickstart.md) | 引擎开发者的编译、打点与采集流程 |
+| [生产归因报告使用指南](docs/production-attribution.md) | 分离计时／计数运行的对齐、三种分解、dense 与 MFU |
 | [调度流导入说明](docs/scheduler-interchange.md) | 外部调度数据接入格式与解释规则 |
 | [版本支持合同](CONTRACT.txt) | 当前版本的证据边界、支持范围与待验收能力 |
 
 Git 仓库保存软件源码、正式说明、配置、源码示例及回归测试。具体测试运行的日志、会话、离线报告、服务器环境记录和复现说明统一保存在 `artifacts/` 下，由 `.gitignore` 排除。现有实验的说明与完整复现步骤随对应 `artifacts/v2/` 实验目录保留；仓库中的通用使用步骤以本 README 和 SDK 接入指南为准。
 
-修改正式 Markdown 文档后，执行 `python -m pip install -r requirements-docs.txt`、`python tools/build_docs.py` 重建三份 HTML 并校验本地链接。运行软件无需安装此可选文档依赖。需要同步生成 `artifacts/v2/` 服务页面时，使用 `python tools/build_docs.py --served`。
+修改正式 Markdown 文档后，执行 `python -m pip install -r requirements-docs.txt`、`python tools/build_docs.py` 重建四份 HTML 并校验本地链接。运行软件无需安装此可选文档依赖。需要同步生成 `artifacts/v2/` 服务页面时，使用 `python tools/build_docs.py --served`。
 
 完整命令参数以 `python3 -m lxtrace COMMAND --help` 为准；将 `COMMAND` 替换为相应子命令。
