@@ -26,6 +26,8 @@
     return union(out);
   }
   const closed = e => e.end_ts!==null && Number.isFinite(e.end_ts) && e.end_ts>=e.begin_ts && e.status!=='incomplete';
+  const capturePartial = q => q.capture_partial===true || q.clean_shutdown===false || Boolean(q.late_records) || Boolean(q.reported_incomplete_events);
+  const hasLoss = session => [session.quality||{},...(session.sources||[])].some(q=>Number(q.dropped_records||q.lost_events||0)>0 || Number(q.protocol_errors||0)>0 || capturePartial(q));
   function dedup(events) { const seen=new Set(); return events.filter(e=>{const k=String(e.event_id);if(seen.has(k))return false;seen.add(k);return true;}); }
   function frameKeys(e) {
     const args=e&&e.args||{}, out=[];
@@ -55,8 +57,7 @@
     if(!closed(event))return {inclusive_ns:null,self_wall_ns:null,exact:false};
     const span=intersection([[event.begin_ts,event.end_ts]],[[a,b]]);
     const children=dedup(session.events||[]).filter(e=>e.parent_id===event.event_id && e.thread_id===event.thread_id && !['request','driver_outside','instant','counter'].includes(e.kind));
-    const q=session.quality||{};
-    const uncertain=children.some(e=>!closed(e)&&e.begin_ts<b)||Number(q.dropped_records||q.lost_events||0)>0||Number(q.protocol_errors||0)>0||(session.sources||[]).some(s=>Number(s.dropped_records||s.lost_events||0)>0);
+    const uncertain=children.some(e=>!closed(e)&&e.begin_ts<b)||hasLoss(session);
     return {inclusive_ns:duration(span),self_wall_ns:uncertain?null:duration(subtract(span,children.filter(closed).map(e=>[e.begin_ts,e.end_ts]))),exact:!uncertain};
   }
   function analyze(session,a,b,options) {
@@ -81,7 +82,7 @@
     for(const p of per.values()) { const clean=intersection(subtract(p.compute,p.exclude),window); raw.push(...p.compute); allCompute.push(...clean); threadCompute.push(clean); }
     let C=intersection(allCompute,window); const R=intersection(requests,window);
     const q=session.quality||{};
-    const loss=Number(q.dropped_records||q.lost_events||0)>0 || (session.sources||[]).some(s=>Number(s.dropped_records||s.lost_events||0)>0);
+    const loss=hasLoss(session);
     const protocolErrors=Number(q.protocol_errors||0)>0;
     const exact=!loss&&!incomplete.length&&!protocolErrors;
     if(loss||protocolErrors)C=[];
@@ -89,13 +90,13 @@
     const warnings=[];
     if(incomplete.length)warnings.push('未闭合范围不计入确定时长；当前数值仅为已闭合、已观测子集。');
     if(incomplete.some(e=>e.kind==='wait'||e.kind==='exchange'))warnings.push('未闭合等待/交换之后的同线程计算后缀保持未知，已保守排除。');
-    if(loss||protocolErrors)warnings.push('源存在无位置丢失或协议错误，确定计算下界置零；原始标注和闭合请求保留。');
+    if(loss||protocolErrors)warnings.push('源存在无位置丢失、协议错误或未完整结束，确定计算下界置零；原始标注和闭合请求保留。');
     if(protocolErrors)warnings.push('标注协议存在错误；当前数值仅为已闭合、已观测子集。');
     const exclusion=q.wait_exclusion_coverage||q.exclusion_coverage||'unknown';
     if(exclusion==='unknown')warnings.push('等待/交换标注覆盖未知；仅排除显式标注范围。');
     warnings.push('线程墙钟语义重叠不代表 on-CPU、持续传输或通信隐藏收益。');
     const cn=duration(C),rn=duration(R),on=duration(O);
-    return {interval:[a,b],wall_ns:b-a,compute_raw_ns:duration(intersection(raw,window)),raw_overlap_ns:duration(intersection(intersection(raw,window),R)),compute_ns:cn,compute_parallel_ns:duration(P),request_ns:rn,overlap_ns:on,wait_ns:duration(intersection(waits,window)),request_overlap_ratio:exact&&rn>0?on/rn:null,compute_overlap_ratio:exact&&cn>0?on/cn:null,incomplete_count:incomplete.length,exclusion_coverage:exclusion,exact,known_subset_only:!exact,warnings,thread_ids:Array.from(new Set(events.map(e=>String(e.thread_id)))),frame_ids:filtered.frame_ids,operator_ids:filtered.operator_ids,event_count:relevant.length,completed_event_count:relevant.filter(closed).length,intervals:{compute:C,requests:R,overlap:O,parallel:P}};
+    return {interval:[a,b],wall_ns:b-a,compute_raw_ns:duration(intersection(raw,window)),raw_overlap_ns:duration(intersection(intersection(raw,window),R)),compute_ns:cn,compute_parallel_ns:duration(P),request_ns:rn,overlap_ns:on,wait_ns:duration(intersection(waits,window)),request_overlap_ratio:exact&&rn>0?on/rn:null,compute_overlap_ratio:exact&&cn>0?on/cn:null,incomplete_count:incomplete.length,capture_partial:capturePartial(q),reported_incomplete_count:q.reported_incomplete_events||0,exclusion_coverage:exclusion,exact,known_subset_only:!exact,warnings,thread_ids:Array.from(new Set(events.map(e=>String(e.thread_id)))),frame_ids:filtered.frame_ids,operator_ids:filtered.operator_ids,event_count:relevant.length,completed_event_count:relevant.filter(closed).length,intervals:{compute:C,requests:R,overlap:O,parallel:P}};
   }
   const api={analyze,union,subtract,intersection,duration,ownWall,closed,dedup,frameKeys,filteredEvents};
   root.LXAnalysis=api; if(typeof module!=='undefined'&&module.exports)module.exports=api;

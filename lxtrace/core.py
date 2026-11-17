@@ -81,10 +81,18 @@ def parallel_intervals(thread_intervals):
     return union(result)
 
 
+def _capture_partial(quality):
+    """Explicit shutdown evidence is global; absent legacy fields stay absent."""
+    return bool(quality.get("capture_partial") is True
+                or quality.get("clean_shutdown") is False
+                or quality.get("late_records")
+                or quality.get("reported_incomplete_events"))
+
+
 def has_loss(session):
     q = session.get("quality", {})
-    return bool(q.get("dropped_records") or q.get("lost_events") or q.get("protocol_errors")
-                or any(src.get("dropped_records") or src.get("lost_events") or src.get("protocol_errors")
+    return bool(q.get("dropped_records") or q.get("lost_events") or q.get("protocol_errors") or _capture_partial(q)
+                or any(src.get("dropped_records") or src.get("lost_events") or src.get("protocol_errors") or _capture_partial(src)
                        for src in session.get("sources", [])))
 
 
@@ -179,7 +187,11 @@ def finalize_session(session):
     s["events"] = events
     q = s["quality"]
     q["duplicate_events_removed"] = q.get("duplicate_events_removed", 0) + duplicate_count
-    q["incomplete_events"] = sum(e.get("end_ts") is None for e in events)
+    # A producer may know about unmatched begins that did not survive buffering.
+    # Re-finalizing an imported session must not erase that reported lower bound.
+    q["incomplete_events"] = max(sum(e.get("end_ts") is None for e in events),
+                                 q.get("incomplete_events") or 0,
+                                 q.get("reported_incomplete_events") or 0)
     q.setdefault("dropped_records", 0)
     q.setdefault("protocol_errors", 0)
     q.setdefault("wait_exclusion_coverage", "unknown")
@@ -312,7 +324,7 @@ def analyze(session, start, end, options=None):
     if open_masks:
         warnings.append("未闭合等待/交换后的同线程计算后缀未知，已从确定计算下界中保守排除。")
     if has_loss(session):
-        warnings.append("源存在无位置丢失或协议错误，计算排除覆盖未知；确定计算下界置零，原始标注和闭合请求保留。")
+        warnings.append("源存在无位置丢失、协议错误或未完整结束，计算排除覆盖未知；确定计算下界置零，原始标注和闭合请求保留。")
     exclusion = q.get("wait_exclusion_coverage", "unknown")
     if exclusion != "complete":
         warnings.append("显式等待/交换标注覆盖未知；只扣除已标记的同线程区间。")
@@ -353,6 +365,7 @@ def analyze(session, start, end, options=None):
                 compute_overlap_ratio=o/c if c and not uncertain else None,
                 thread_ids=sorted(groups), frame_ids=sorted(frame_ids), operator_ids=sorted(operator_ids),
                 event_count=len(selected), incomplete_count=incomplete,
+                capture_partial=_capture_partial(q), reported_incomplete_count=q.get("reported_incomplete_events", 0),
                 exact=not uncertain, known_subset_only=uncertain, exclusion_coverage=exclusion,
                 on_cpu_ns=None, cpu_residency="unavailable", transfer_overlap_ns=None,
                 denominator_request_ns=r, denominator_compute_ns=c,

@@ -3,7 +3,10 @@
 
 /* C-compatible API. No function throws; loss and protocol failures never abort the application.
  * LXTRACE_OUTPUT selects a JSONL file; LXTRACE_DISABLED=1 or no output path makes calls no-ops.
- * args_json is caller-owned JSON object text, <= 767 bytes. Tensor/message payloads are not captured.
+ * args_json is caller-owned JSON object text, <= 767 UTF-8 bytes, nesting <= 64.
+ * Non-finite numbers, malformed text or oversized arguments are replaced with
+ * {"invalid_args":true} and counted as protocol errors; the event is retained.
+ * Tensor/message payloads are not captured.
  * Synchronous ranges are strictly nested on the calling thread; async handles may close elsewhere.
  */
 #ifdef __cplusplus
@@ -43,6 +46,13 @@ lx_handle lx_async_begin_transport(const char *name, const char *correlation_id,
 void lx_async_complete_observed(lx_handle handle);
 void lx_instant(const char *name, const char *args_json);
 void lx_counter(const char *name, double value);
+/* Freeze the recorded event set and write a cumulative quality snapshot.
+ * Unclosed recorded ranges/requests, loss and protocol errors make the capture
+ * unclean. Later event calls are rejected and counted as late/dropped records;
+ * changed quality is appended immediately, including during later destructors.
+ * A snapshot only describes observations up to that snapshot. Abnormal process
+ * exit or a failed output write cannot be made durable by this buffered API.
+ */
 void lx_shutdown(void);
 #ifdef __cplusplus
 }

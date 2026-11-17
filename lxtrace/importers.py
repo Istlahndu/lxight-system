@@ -7,6 +7,7 @@ SUB starts replace the active step. No API range fabricates an async request.
 """
 import hashlib
 import json
+import math
 import struct
 from pathlib import Path
 
@@ -40,6 +41,88 @@ def _integer(value, label):
     return value
 
 
+def _sdk_args_valid(args):
+    """Keep malformed/non-interchangeable metadata from destroying its range."""
+    if not isinstance(args, dict):
+        return False
+    pending = [args]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, float) and not math.isfinite(value):
+            return False
+        elif isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeError:
+                return False
+    return True
+
+
+def _sdk_quality(quality, rows):
+    """SDK snapshots are cumulative; historical unmarked quality rows are deltas."""
+    totals, previous, revision = {}, {}, None
+    legacy = {"dropped_records": 0, "protocol_errors": 0}
+    clean = bool(rows)
+    snapshots = 0
+    for row in rows:
+        quality.setdefault("quality_history", []).append(dict(row))
+        clean &= row.get("clean_shutdown") is True
+        quality["capacity"] = row.get("capacity")
+        if row.get("quality_semantics") == "cumulative_snapshot":
+            snapshots += 1
+            current_revision = _integer(row.get("quality_revision"), "quality_revision")
+            counters = {key: _integer(row.get(key, 0), key) for key in
+                        ("dropped_records", "protocol_errors", "late_records", "incomplete_events")}
+            invalid = revision is not None and (current_revision <= revision or
+                       any(counters[key] < previous.get(key, 0) for key in counters))
+            if invalid:
+                quality["protocol_errors"] += 1
+                quality["warnings"].append("SDK quality snapshots are not monotonic; retained counts are lower bounds")
+                quality["quality_counts_are_lower_bounds"] = True
+                clean = False
+            revision = max(revision if revision is not None else 0, current_revision)
+            previous = {key: max(previous.get(key, 0), value) for key, value in counters.items()}
+            totals.update(previous)
+        elif row.get("quality_semantics") not in (None, "delta"):
+            raise ValueError("unsupported SDK quality semantics")
+        else:
+            for key in legacy:
+                legacy[key] += _integer(row.get(key, 0), key)
+        for key in ("unsupported_fork_count", "late_records"):
+            if key in row:
+                quality[key] = max(quality.get(key, 0), _integer(row[key], key))
+        for key in ("unsupported_fork_count_is_lower_bound", "fork_capture_policy", "fork_tracking_status"):
+            if key in row:
+                quality[key] = row[key]
+        if row.get("fork_tracking_status") == "unavailable":
+            clean = False
+            quality["warnings"].append("SDK fork tracking could not be installed; child coverage is unknown")
+    for key in legacy:
+        # Mixed formats have no declared relationship. Retain the greater known
+        # bound rather than double counting a delta already covered by a snapshot.
+        quality[key] += max(legacy[key], totals.get(key, 0))
+    if snapshots and any(legacy.values()):
+        quality["quality_counts_are_lower_bounds"] = True
+        quality["protocol_errors"] += 1
+        quality["warnings"].append("Mixed SDK delta and cumulative quality; totals are lower bounds")
+        clean = False
+    if snapshots:
+        quality.update(quality_semantics="cumulative_snapshot", quality_revision=revision,
+                       quality_snapshot_count=snapshots, reported_incomplete_events=totals.get("incomplete_events", 0))
+    if quality.get("unsupported_fork_count"):
+        clean = False
+        quality["warnings"].append("SDK initialized before fork: child instrumentation is disabled until exec; "
+                                   "child coverage is unknown and fork+exec is conservatively partial")
+    if not rows:
+        quality["warnings"].append("SDK shutdown quality record is missing; capture completeness is unknown")
+    quality["clean_shutdown"] = clean
+
+
 def load_sdk(path):
     """Read lxtrace.sdk.v1 JSONL; only observed, matched ends close events."""
     path = Path(path)
@@ -68,7 +151,7 @@ def load_sdk(path):
     threads, events, order, stacks = {}, {}, [], {}
     quality = {"dropped_records": 0, "protocol_errors": len(parse_errors), "clean_shutdown": False,
                "warnings": parse_errors, "wait_annotation_coverage": "unknown"}
-    last = 0
+    last, quality_rows = 0, []
     for row in rows:
         typ = row.get("type")
         if typ == "thread":
@@ -84,7 +167,7 @@ def load_sdk(path):
             last = max(last, ts)
             kind = row.get("kind", "range") if typ == "begin" else typ
             args = row.get("args", {})
-            if not isinstance(args, dict):
+            if not _sdk_args_valid(args):
                 args = {"invalid_args": True}
                 quality["protocol_errors"] += 1
             e = {"event_id": eid, "thread_id": th, "pid": row.get("pid"),
@@ -124,26 +207,8 @@ def load_sdk(path):
             if e["kind"] == "request":
                 e["args"]["completion_tid"] = row.get("tid")
         elif typ == "quality":
-            quality["dropped_records"] += _integer(row.get("dropped_records", 0), "dropped_records")
-            quality["protocol_errors"] += _integer(row.get("protocol_errors", 0), "protocol_errors")
-            quality["clean_shutdown"] = row.get("clean_shutdown") is True
-            quality["capacity"] = row.get("capacity")
-            if "unsupported_fork_count" in row:
-                quality["unsupported_fork_count"] = _integer(
-                    row["unsupported_fork_count"], "unsupported_fork_count")
-                quality["unsupported_fork_count_is_lower_bound"] = (
-                    row.get("unsupported_fork_count_is_lower_bound") is True)
-                quality["fork_capture_policy"] = row.get("fork_capture_policy")
-                quality["fork_tracking_status"] = row.get("fork_tracking_status")
-                if quality["unsupported_fork_count"]:
-                    quality["clean_shutdown"] = False
-                    quality["warnings"].append(
-                        "SDK initialized before fork: child instrumentation is disabled until exec; "
-                        "child coverage is unknown and fork+exec is conservatively partial")
-                if quality["fork_tracking_status"] == "unavailable":
-                    quality["clean_shutdown"] = False
-                    quality["warnings"].append(
-                        "SDK fork tracking could not be installed; child coverage is unknown")
+            quality_rows.append(row)
+    _sdk_quality(quality, quality_rows)
     # Worker frame references must be explicit application IDs, never proximity in time.
     frame_names = {}
     duplicate_names = set()
@@ -183,7 +248,15 @@ def load_sdk(path):
             parent = events.get(str(parent.get("parent_id")))
     session["events"] = [events[k] for k in order]
     session["threads"] = list(threads.values())
-    quality["incomplete_events"] = sum(e["end_ts"] is None for e in session["events"])
+    quality["incomplete_events"] = max(sum(e["end_ts"] is None for e in session["events"]),
+                                       quality.get("reported_incomplete_events", 0))
+    if quality["dropped_records"] or quality["protocol_errors"] or quality["incomplete_events"] or quality.get("late_records"):
+        quality["clean_shutdown"] = False
+    if quality.get("late_records"):
+        quality["warnings"].append("SDK rejected %d record attempts after shutdown; capture is partial" % quality["late_records"])
+    if quality["incomplete_events"]:
+        quality["warnings"].append("SDK capture has %d unclosed ranges; no end boundary was fabricated" % quality["incomplete_events"])
+    quality["capture_partial"] = not quality["clean_shutdown"]
     quality["loss_position_known"] = False
     quality["source_continuity"] = "unknown" if (
         quality["dropped_records"] or quality["protocol_errors"]

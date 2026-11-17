@@ -38,3 +38,11 @@ CNTVCT to CLOCK_MONOTONIC or align separate counting runs. ticks-only zero array
 are not hardware counter measurements. Counter windows never imply hardware busy
 boundaries. Cross-run ratio transfer and model-derived category splits are not
 implemented by this native import path.
+
+The user-space SDK validates JSON object metadata before writing JSONL. Invalid
+arguments are marked and counted without deleting their range. Shutdown quality
+reports unclosed scopes and rejected post-shutdown record attempts. Explicitly
+marked cumulative quality snapshots are not summed; historical delta rows stay
+compatible. Exceptions to completeness remain partial in archives and reports.
+The existing fork policy remains child-disabled-until-exec after SDK first use,
+with the parent conservatively partial. No new privileged access is required.

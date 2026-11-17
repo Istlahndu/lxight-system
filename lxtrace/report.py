@@ -454,6 +454,12 @@ def merge_sessions(paths, run_id=None):
         for key in ("dropped_records", "protocol_errors", "incomplete_events"):
             value = q.get(key, 0)
             result["quality"][key] = None if value is None or result["quality"][key] is None else result["quality"][key] + value
+        for key in ("late_records", "reported_incomplete_events"):
+            if key in q:
+                value, current = q[key], result["quality"].get(key, 0)
+                result["quality"][key] = None if value is None or current is None else current + value
+        if "capture_partial" in q:
+            result["quality"]["capture_partial"] = result["quality"].get("capture_partial", False) or q["capture_partial"]
         result["quality"]["clean_shutdown"] &= q.get("clean_shutdown") is True
         result["quality"]["warnings"].extend(q.get("warnings", []))
         for old in q.get("unknown_windows", []):

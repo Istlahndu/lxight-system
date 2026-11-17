@@ -67,6 +67,7 @@
 <p>所有同步 frame／range 必须在同线程严格嵌套闭合，C++ RAII 会在离开 scope 时闭合；不要让同步范围跨线程结束。异步 handle 可由另一线程调用 <code>lx_async_complete_observed(handle)</code>，但它表示完成观测，不是硬件完成时间戳。请求释放、提交函数返回或父帧结束都不应代替完成观测；未完成的请求保持未闭合。</p>
 <p>context 仅在同一进程有效，不是跨进程关联协议。C API <code>lx_context_attach(context, &amp;previous)</code> 成功返回 0，失败返回 -1；恢复 <code>previous</code> 前，应先结束当前线程中的所有子范围。C++ <code>ContextScope::active()</code> 可查询附加是否成功；析构时恢复之前的 context。生产者帧可以先于消费者工作结束，关联关系不会扩展生产者的实际帧区间。</p>
 <p>建议元数据明确记录 <code>microbatch</code>、<code>layer</code>、<code>operator_id</code>，需要父帧关联时使用 <code>parent_application_frame_id</code>。<code>args_json</code> 必须是 JSON 对象文本；单条记录参数区容量为 767 字节，框架补入的保留字段也占容量。不要向元数据写入 tensor、权重或消息 payload。</p>
+<p>SDK 在写入前校验参数对象的语法、UTF-8、转义和数值可表示性。非法或超出容量的参数会替换为 <code>{"invalid_args":true}</code> 并计入 <code>protocol_errors</code>，仍保留对应范围及可观测的结束边界；例如 <code>{oops}</code> 不会再破坏整条 JSONL 记录。参数校验与软件范围采集均在用户态执行，不需要 root 或 PMU 权限。</p>
 <p>只有已确认的驱动线程角色、完整帧及完整调用全集才能启用 <code>driver_calls_complete=1</code>，用于推导“驱动线程调用外”补集；不满足时保持 0。<code>frame_driver</code>、<code>worker</code> 等只是软件角色，不代表固定物理核或硬件单元。</p>
 <h2 id="_2">异步计算与通信重叠</h2>
 <p>SDK 不要求同一线程的计算范围与异步请求串行。适配层应在提交前创建 <code>lx_async_begin_transport(...)</code> 句柄，在已有执行器中提交通信，记录可独立推进的计算范围，并在实际观测到该请求完成后调用 <code>lx_async_complete_observed(handle)</code>。完成可由提交线程或进度线程记录；一个请求只完成一次。多个并发请求分别持有句柄，即使业务名称相同也不能共用句柄。</p>
@@ -74,7 +75,9 @@
 <p>这些区间能够说明计算软件范围与通信调用／请求在途时间相交，不能证明整段实际占用计算单元或传输引擎。同一逻辑 CPU 上的多个软件线程可交替推进；设备也可能在主机调用返回后继续执行。只有独立、可校时且语义明确的硬件活动边界才能支持硬件重叠结论。仅有 SDK 数据时，报告的硬件活动并存显示 <code>unavailable</code>，不是零重叠；当前 v2 界面也不提供独立的软件重叠比例指标。</p>
 <h2 id="_3">长任务与多进程接入限制</h2>
 <p>当前 SDK 先在进程内缓冲记录，默认容量为 <strong>32768 条记录</strong>。可在首次 SDK 调用前设置 <code>LXTRACE_CAPACITY</code>，取值范围为 4～1000000；无效值沿用默认容量。线程登记、范围开始和结束等分别占用记录，容量不是完整算子的数量。缓冲满后新增记录会丢失，并在落盘质量信息的 <code>dropped_records</code> 中报告；结束记录也可能丢失，导致范围未闭合。长时间推理应选择有限的采集窗口、控制埋点粒度，并检查丢失记录与未闭合范围，不能将采集结果视为完整执行历史。</p>
-<p>记录在 <code>lx_shutdown()</code> 或正常进程退出时写入文件，没有周期落盘或流式刷新。关闭后本进程不再继续记录，也不能通过再次 <code>lx_init()</code> 开始新会话；窗口需要由引擎控制埋点或采用独立的采集进程生命周期。强制终止、崩溃或跳过正常退出流程时，可能没有任何记录文件。应在工作线程与范围结束后主动调用 <code>lx_shutdown()</code>，并保留输出质量信息。</p>
+<p>事件记录在 <code>lx_shutdown()</code> 或正常进程退出时写入文件，没有周期落盘或连续事件流式刷新。关闭后本进程不再接受事件，也不能通过再次 <code>lx_init()</code> 开始新会话；后续事件尝试计入 <code>late_records</code> 与 <code>dropped_records</code>，并向原文件追加质量快照。仍未闭合的同步范围或异步请求保持未闭合，<code>clean_shutdown=false</code>，不会补造结束时间。重复调用 shutdown 且质量未变化时，不重复追加快照。</p>
+<p>新 SDK 的质量行带有 <code>quality_semantics="cumulative_snapshot"</code>、递增的 <code>quality_revision</code>，其中计数是截至快照时的累计值，不能逐行相加。产品导入器保留质量历史，合并累计快照，并让异常状态持续影响原生档案和 HTML 报告；旧版无标志质量行仍按原增量语义读取。<code>clean_shutdown</code> 只描述该采集的已观察质量，不证明业务结果正确，也不保证最后一次快照之后仍活跃线程的完整覆盖。</p>
+<p>窗口需要由引擎控制埋点或采用独立的采集进程生命周期。强制终止、崩溃或跳过正常退出流程时，可能没有任何记录文件；本版本没有增加崩溃恢复。应在工作线程与范围结束后主动调用 <code>lx_shutdown()</code>，并检查输出质量信息。</p>
 <p>同节点多进程引擎可使用 <code>record --profile basic</code> 启动。采集器为本轮注入 <code>run_id</code>，并通过含 <code>%p</code> 的 <code>LXTRACE_OUTPUT</code> 为各工作进程指定原档路径；最新 SDK 将 <code>%p</code> 替换为当前 PID。启动器必须向工作进程传递这些环境变量，并等待所有工作进程正常退出，采集器才汇集原档、生成原生会话与统一 HTML。不要将多个工作进程的输出改成同一个固定文件。</p>
 <p>每个工作进程应在自身入口初始化 SDK。首次 SDK 调用之前创建进程，或在 <code>exec</code> 加载新程序后初始化，均可建立独立记录。已经使用 SDK 的进程再 <code>fork</code> 时，子进程在 <code>exec</code> 前禁用 SDK 记录和落盘，不复用继承的缓冲、句柄、context 或锁；再次调用 <code>lx_init()</code> 也不能解除这一限制。在 Linux 标准 <code>fork()</code> 路径上，父进程输出 <code>unsupported_fork_count</code>（至少一次的下界）、协议错误及明确警告，采集结果标为 partial；即使子进程随后 <code>exec</code> 并正常记录，父进程仍保守降级。不要依赖直接系统调用、<code>vfork</code> 或其他绕过 <code>pthread_atfork</code> 的机制报告完整子进程覆盖；本策略不提供通用的多线程 fork 子进程运行支持。</p>
 <p>context 只在同一进程有效；统一报告汇集进程时间线，不自动建立跨进程请求或帧关联。框架特定关联仍由适配层提供。<code>basic</code> 不支持 <code>--duration</code>，指定时会在启动业务前拒绝执行；需让有限任务正常结束并落盘。</p>

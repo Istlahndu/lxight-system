@@ -297,6 +297,7 @@ python3 -m lxtrace record --profile basic \
 </code></pre>
 <p>统一软件时间线按同一主机、同一次系统启动的 <code>CLOCK_MONOTONIC</code> 绝对时间统一原点，保留各进程真实时间差，不按帧或屏障人为对齐。报告默认以每个 rank 的彩色算子流水线展示软件执行顺序；矩阵、向量、交换 API 和等待使用统一配色，帧与请求保留独立轨道。可在“轨道”菜单中从“流水线总览”切换为“按类别分轨”，分别查看帧、矩阵、向量、交换 API、请求和等待。没有相应硬件来源时，硬件轨与指标仍显示 <code>unavailable</code> 或 <code>N/A</code>。</p>
 <p>SDK 采用有界内存缓冲，并在正常退出或 <code>lx_shutdown</code> 时落盘；长时间服务应评估缓冲容量与丢失。异步工作应记录提交、关联标识与完成观测；同步 scope 只能覆盖其实际调用范围。具体 API、编译与跨线程接入方法见 <a href="docs/sdk-quickstart.html">C/C++ 推理引擎 SDK 接入指南</a>。历史 v1 数据仍可使用 <code>import --type v1</code> 转换，软件证据不会因此增加物理 CPU 驻留或设备执行边界。</p>
+<p>SDK 会校验参数 JSON；非法参数以 <code>invalid_args</code> 标记替代并计错，范围仍保留。关闭后的事件尝试会计入丢失并追加累计质量快照，未闭合范围与异常结束保持 partial。导入、归档和 HTML 保留这些质量信息，新旧 SDK 格式均可读取。这些可靠性功能不需要新增 root 权限；升级 SDK 后需重新编译链接被测程序。</p>
 <h2 id="6">6. 查看、分析与导出</h2>
 <h3 id="61">6.1 查看结果</h3>
 <p>直接用浏览器打开 <code>record</code> 默认生成的 <code>session.html</code>、<code>pmu.html</code>，或 <code>--html</code> 指定的文件。这些文件是自包含报告，可以复制到开发工作站离线查看，无需启动网页服务。</p>

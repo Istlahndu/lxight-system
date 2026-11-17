@@ -436,7 +436,12 @@ def analyze_resources(session, start=None, end=None, resource_id=None):
                            "open_count": sum(r.get("end_ns") is None for r in hw),
                            "record_ids": [r["record_id"] for r in group]})
     peak = max((x["target_cpus"] for x in concurrency), default=0)
-    warnings = []
+    capture_quality = copy.deepcopy(s.get("quality", {}))
+    warnings = [str(w) for w in capture_quality.get("warnings", [])]
+    if (capture_quality.get("capture_partial") or capture_quality.get("clean_shutdown") is False
+            or any(capture_quality.get(k, 0) for k in
+                   ("late_records", "reported_incomplete_events", "protocol_errors"))):
+        warnings.append("Capture quality is partial or abnormal; surviving records do not certify complete coverage.")
     if not str(s["allocation"].get("status", "")).startswith("verified"):
         warnings.append("Allocation is unverified; no CPU capacity is certified.")
     if totals["unknown_cpu_ns"]:
@@ -465,7 +470,7 @@ def analyze_resources(session, start=None, end=None, resource_id=None):
                 per_cpu=per_cpu, concurrency=concurrency, categories=categories,
                 counters=counters, samples=[r for r in relevant if r["representation"] == "sample"],
                 records=relevant, hardware_overlap=_hardware_overlap(s, relevant, start, end),
-                warnings=warnings, **totals)
+                capture_quality=capture_quality, warnings=warnings, **totals)
     if not allocation_known:
         for key in ("target_cpu_ns", "other_cpu_ns", "idle_cpu_ns", "unknown_cpu_ns", "capacity_cpu_ns",
                     "effective_capacity_cpu_ns", "known_capacity_cpu_ns", "unallocated_cpu_ns", "target_wall_ns",
