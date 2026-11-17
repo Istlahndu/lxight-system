@@ -1,0 +1,122 @@
+{
+  "schema_version": "lxtrace.model-plugin.v1",
+  "profile_id": "generic-transformer",
+  "model": "Generic transformer (synthetic integration example)",
+  "engine": "GFTRACE2 adapter example; not a verified production model",
+  "revision": "1",
+  "compute_modes": [
+    "busy",
+    "affine",
+    "activation"
+  ],
+  "exchange_modes": [
+    "shuffle"
+  ],
+  "wait_modes": [
+    "bar",
+    "xw",
+    "spin"
+  ],
+  "idle_modes": [
+    "idle"
+  ],
+  "exchange_stages": [
+    "redistribute"
+  ],
+  "mode_labels": {
+    "affine": "Projection matrix",
+    "activation": "Activation vector",
+    "shuffle": "Explicit exchange"
+  },
+  "trace": {
+    "format": [
+      "GFTRACE1",
+      "GFTRACE2"
+    ],
+    "stages": {
+      "0": "encoder",
+      "1": "projection",
+      "2": "redistribute"
+    },
+    "sites": {
+      "41": {
+        "mode": "affine",
+        "category": "mat"
+      },
+      "42": {
+        "mode": "activation",
+        "category": "vec"
+      },
+      "43": {
+        "mode": "shuffle",
+        "category": "cx"
+      }
+    },
+    "mode_categories": {
+      "busy": "unknown",
+      "affine": "mat",
+      "activation": "vec",
+      "shuffle": "cx",
+      "bar": "wait",
+      "xw": "wait",
+      "spin": "wait",
+      "idle": "drv"
+    }
+  },
+  "dense": {
+    "backend": "none"
+  },
+  "stage_families": {
+    "encoder": {
+      "label": "Encoder",
+      "color": "#336699",
+      "stages": [
+        "encoder",
+        "projection"
+      ]
+    },
+    "transport": {
+      "label": "Transport",
+      "color": "#228877",
+      "stages": [
+        "redistribute"
+      ]
+    }
+  },
+  "presentation": {
+    "views": {
+      "dense_enabled": false
+    },
+    "stage_labels": {
+      "projection": "Projection stage"
+    }
+  },
+  "flop": {
+    "adapter": "matmul_components.v1",
+    "definition": "Synthetic example: one H x H projection plus 4 FLOP/element activation for every selected layer and input token. No attention, output head or production model claim.",
+    "components": [
+      {
+        "kind": "matmul",
+        "stage": "projection",
+        "m": [
+          "B",
+          "T"
+        ],
+        "n": "config.hidden_size",
+        "k": "config.hidden_size",
+        "repeat": "layers"
+      },
+      {
+        "kind": "elementwise",
+        "stage": "encoder",
+        "elements": [
+          "B",
+          "T",
+          "config.hidden_size"
+        ],
+        "flop_per_element": 4,
+        "repeat": "layers"
+      }
+    ]
+  }
+}

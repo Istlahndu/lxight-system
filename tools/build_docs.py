@@ -24,15 +24,16 @@ SPECS = (
     ('docs/scheduler-interchange.md', 'docs/scheduler-interchange.html', 'scheduler-interchange.html', 'LX2 性能分析器 · 调度流导入格式'),
     ('docs/production-attribution.md', 'docs/production-attribution.html', 'production-attribution.html', 'LX2 性能分析器 · 生产归因报告'),
     ('docs/high-frequency-sdk.md', 'docs/high-frequency-sdk.html', 'high-frequency-sdk.html', 'LX2 性能分析器 · 高频采集与边界 PMU'),
+    ('docs/model-plugins.md', 'docs/model-plugins.html', 'model-plugins.html', 'LX2 性能分析器 · 硬件配置与模型插件'),
 )
 
 
 def links_for(source, served):
     if served:
-        return [('usage.html', '使用说明'), ('sdk-quickstart.html', 'SDK 接入'), ('scheduler-interchange.html', '调度数据格式'), ('production-attribution.html', '生产归因'), ('high-frequency-sdk.html', '高频采集')]
+        return [('usage.html', '使用说明'), ('sdk-quickstart.html', 'SDK 接入'), ('scheduler-interchange.html', '调度数据格式'), ('production-attribution.html', '生产归因'), ('high-frequency-sdk.html', '高频采集'), ('model-plugins.html', '模型插件')]
     prefix = '../' if source.startswith('docs/') else ''
     docs = '' if prefix else 'docs/'
-    return [(prefix + 'README.html', '使用说明'), (docs + 'sdk-quickstart.html', 'SDK 接入'), (docs + 'scheduler-interchange.html', '调度数据格式'), (docs + 'production-attribution.html', '生产归因'), (docs + 'high-frequency-sdk.html', '高频采集')]
+    return [(prefix + 'README.html', '使用说明'), (docs + 'sdk-quickstart.html', 'SDK 接入'), (docs + 'scheduler-interchange.html', '调度数据格式'), (docs + 'production-attribution.html', '生产归因'), (docs + 'high-frequency-sdk.html', '高频采集'), (docs + 'model-plugins.html', '模型插件')]
 
 
 def rewrite_href(match, source, target, served):

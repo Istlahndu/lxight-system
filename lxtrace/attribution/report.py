@@ -129,7 +129,12 @@ def build_timeline(analysis, bin_ns=200000):
 
 
 def report_data(analysis):
-    """Keep display evidence; detailed raw/block records remain in the sidecar."""
+    """Keep uniform presentation descriptors and display evidence unchanged.
+
+    Plugins have already named stages, families, modes and colors. This layer
+    copies those descriptors without interpreting model names or stage IDs;
+    detailed raw/block records remain in the sidecar.
+    """
     data = copy.deepcopy({k: v for k, v in analysis.items() if k not in ("entries", "segments", "drivers")})
     data.setdefault("entry_count", len(analysis.get("entries", [])))
     data.setdefault("segment_count", len(analysis.get("segments", [])))

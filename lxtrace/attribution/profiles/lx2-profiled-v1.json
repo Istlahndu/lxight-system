@@ -18,22 +18,239 @@
   "calibration": {
     "rho12": 0.3,
     "rho2": 0.22,
-    "rho_range": [[0.28, 0.2], [0.32, 0.44]],
+    "rho_range": [
+      [
+        0.28,
+        0.2
+      ],
+      [
+        0.32,
+        0.44
+      ]
+    ],
     "branch_penalty": 16,
     "l1i_penalty": 15,
     "l2i_penalty": 200,
     "snoop_latency": 200,
     "cross_package_latency": 527,
     "local_fill_latency": 215,
-    "za_input": [66, 73],
-    "za_output": [90, 128],
-    "za_output_last": [90, 158],
+    "za_input": [
+      66,
+      73
+    ],
+    "za_output": [
+      90,
+      128
+    ],
+    "za_output_last": [
+      90,
+      158
+    ],
     "mopa_per_pass": 1024,
-    "dense_fe_refill_rates": {"0x0001": 0.000007, "0x0028": 0.000006}
+    "dense_fe_refill_rates": {
+      "0x0001": 7e-06,
+      "0x0028": 6e-06
+    }
   },
   "provenance": [
-    {"source": "mfu-kit-tl3@09d3036a mfukit/hw/hw.json", "scope": "cores, frequency, BFMOPA, unit throughput, cache line and bandwidth", "jobs": [2117625, 2117626, 2141955]},
-    {"source": "glm5f-tl3@850d5a0f glm5f/c/py/gf_pmu.py", "scope": "profile-D rho, FE and fill-source latency model", "jobs": [2094120, 2094264], "note": "The 200/527/215-cycle source weights intentionally retain the profile-D calibration used by the supplied golden. They are not silently replaced by the newer hardware-table latency measurements."},
-    {"source": "glm5f-dsub@148a1202 glm5f/c/py/gf_dsub.py", "scope": "dense ZA bounds and low-perturbation instruction-refill rates", "jobs": [2117697, 2117699]}
-  ]
+    {
+      "source": "mfu-kit-tl3@09d3036a mfukit/hw/hw.json",
+      "scope": "cores, frequency, BFMOPA, unit throughput, cache line and bandwidth",
+      "jobs": [
+        2117625,
+        2117626,
+        2141955
+      ]
+    },
+    {
+      "source": "glm5f-tl3@850d5a0f glm5f/c/py/gf_pmu.py",
+      "scope": "profile-D rho, FE and fill-source latency model",
+      "jobs": [
+        2094120,
+        2094264
+      ],
+      "note": "The 200/527/215-cycle source weights intentionally retain the profile-D calibration used by the supplied golden. They are not silently replaced by the newer hardware-table latency measurements."
+    },
+    {
+      "source": "glm5f-dsub@148a1202 glm5f/c/py/gf_dsub.py",
+      "scope": "dense ZA bounds and low-perturbation instruction-refill rates",
+      "jobs": [
+        2117697,
+        2117699
+      ]
+    }
+  ],
+  "decomposition": "lx2-sme-v1",
+  "events": {
+    "matrix_instruction": {
+      "code": "0x7201",
+      "name": "SME MOPA instructions (bf16/fp32 profile uses two busy cycles per instruction)",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "matrix_first",
+        "issue",
+        "unit_load"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "load_stall": {
+      "code": "0x7005",
+      "name": "Zero-issue cycles with an outstanding load; may overlap matrix busy",
+      "counts_while_matrix_busy": true,
+      "used_for": [
+        "matrix_first",
+        "issue"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2",
+      "contains_roles": [
+        "load_l1_stall",
+        "load_l2_stall"
+      ]
+    },
+    "load_l1_stall": {
+      "code": "0x7007",
+      "name": "Zero-issue cycles with outstanding L1 miss",
+      "counts_while_matrix_busy": true,
+      "used_for": [
+        "issue"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2",
+      "contains_roles": [
+        "load_l2_stall"
+      ]
+    },
+    "load_l2_stall": {
+      "code": "0x7008",
+      "name": "Zero-issue cycles with outstanding L2 miss",
+      "counts_while_matrix_busy": true,
+      "used_for": [
+        "matrix_first",
+        "issue"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "l2_refill": {
+      "code": "0x0017",
+      "name": "L2D_CACHE_REFILL, supply from beyond local L2",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "matrix_first",
+        "issue",
+        "unit_load"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "sibling_refill": {
+      "code": "0x6055",
+      "name": "L2 refill from sibling-core L2",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "matrix_first",
+        "issue"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "remote_refill": {
+      "code": "0x6057",
+      "name": "L2 refill from another package",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "matrix_first",
+        "issue"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "branch_mispredict": {
+      "code": "0x0010",
+      "name": "BR_MIS_PRED",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "matrix_first",
+        "issue"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "l1i_refill": {
+      "code": "0x0001",
+      "name": "L1I_CACHE_REFILL",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "matrix_first",
+        "issue"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "l2i_refill": {
+      "code": "0x0028",
+      "name": "L2I_CACHE_REFILL",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "matrix_first",
+        "issue"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "vector_instruction": {
+      "code": "0x8006",
+      "name": "SVE instructions including load/store",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "unit_load"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "vector_load_store": {
+      "code": "0x8084",
+      "name": "SVE load/store instructions",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "unit_load"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "l1d_refill": {
+      "code": "0x0003",
+      "name": "L1D_CACHE_REFILL",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "unit_load"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    },
+    "instruction": {
+      "code": "0x0008",
+      "name": "INST_RETIRED",
+      "counts_while_matrix_busy": null,
+      "used_for": [
+        "unit_load"
+      ],
+      "source": "PMU event dictionary; gf_pmu_stim; glm5f-tl3@850d5a0f",
+      "semantics_status": "reference_calibrated_lx2"
+    }
+  },
+  "display": {
+    "instruction_label": "MOPA",
+    "vector_label": "SVE",
+    "unit_labels": {
+      "mat": "矩阵",
+      "sve": "SVE",
+      "ldst": "装载/存储",
+      "l2bw": "L2 供数",
+      "xbw": "跨核供数",
+      "ipc": "IPC / 峰值"
+    }
+  }
 }

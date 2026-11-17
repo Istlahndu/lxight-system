@@ -298,12 +298,10 @@ GF_PAIRS = {
 # The original exchange sites 1/2 retain their meaning. The producer's later
 # substep extension uses the same 16-byte event layout and adds sites 3..9.
 # These are software intent labels, not hardware activity boundaries.
-GF_SUB_SITES = {
-    1: ("push", "cx"), 2: ("gath", "cx"),
-    3: ("deqg", "vec"), 4: ("mmg", "mat"),
-    5: ("deqd", "vec"), 6: ("mmd", "mat"),
-    7: ("swi", "vec"), 8: ("pkg", "vec"), 9: ("pkd", "vec"),
-}
+def _gf_sub_sites(model=None):
+    from .plugins import load_model
+    return {int(key): (row['mode'], row['category'])
+            for key, row in load_model(model)['trace']['sites'].items()}
 
 
 def _metadata(path):
@@ -371,13 +369,13 @@ def _gf_frame_metadata(meta):
     return frames
 
 
-def load_gftrace(path, metadata=None, mapping=None, windows=True, run_id=None):
+def load_gftrace(path, metadata=None, mapping=None, windows=True, run_id=None, model=None):
     """Keep GFTRACE1's v1 API; GFTRACE2 imports directly to the native v2 schema."""
     path = Path(path)
     raw = path.read_bytes()
     if raw[:8] == b"GFTRACE2":
         from .gftrace import load_gftrace2
-        return load_gftrace2(path, metadata, mapping, windows=windows, run_id=run_id)
+        return load_gftrace2(path, metadata, mapping, windows=windows, run_id=run_id, model=model)
     if len(raw) < 24:
         raise ValueError("truncated GFTRACE1 header")
     magic, frequency, count, reserved = struct.unpack_from("<8sQii", raw)
@@ -388,6 +386,12 @@ def load_gftrace(path, metadata=None, mapping=None, windows=True, run_id=None):
     if metadata is None and path.with_suffix(".txt").exists():
         metadata = path.with_suffix(".txt")
     meta, stages, layers = _metadata(metadata)
+    from .plugins import load_model
+    plugin = load_model(model)
+    if 'GFTRACE1' not in plugin['trace']['format']:
+        raise ValueError('selected model plugin does not support GFTRACE1')
+    sub_sites = _gf_sub_sites(plugin)
+    stages = {**{int(k): v for k, v in plugin['trace'].get('stages', {}).items()}, **stages}
     frame_metadata = _gf_frame_metadata(meta)
     if meta.get("frequency_hz", frequency) != frequency:
         raise ValueError("GFTRACE1 metadata and binary clock frequency disagree")
@@ -457,8 +461,8 @@ def load_gftrace(path, metadata=None, mapping=None, windows=True, run_id=None):
                 previous_step = open_by_kind.get(23)
                 if (kind == 23 and previous_step is not None and stack
                         and stack[-1] is previous_step
-                        and previous_step["args"]["code"] in GF_SUB_SITES
-                        and code in GF_SUB_SITES):
+                        and previous_step["args"]["code"] in sub_sites
+                        and code in sub_sites):
                     # SUB_B is a mode switch in the producer. Only the active
                     # top-level step can be replaced; never close an unrelated
                     # wait or recover a crossing/malformed synchronous scope.
@@ -476,10 +480,10 @@ def load_gftrace(path, metadata=None, mapping=None, windows=True, run_id=None):
                 if kind == 9:
                     name = "frame.%d" % aux
                 if kind == 23:
-                    mode, category = GF_SUB_SITES.get(code, ("site.%d" % code, "unknown"))
-                    name = "subexchange.api" if code in (1, 2) else "substep." + mode
+                    mode, category = sub_sites.get(code, ("site.%d" % code, "unknown"))
+                    name = "subexchange.api" if category == 'cx' else "substep." + mode
                 category = categories.get(str(kind), categories.get(kind, category))
-                if category not in ("mat", "vec", "cc", "cx", "wait", "drv", "unknown"):
+                if category not in ("mat", "vec", "mem", "cc", "cx", "fe", "wait", "drv", "unknown"):
                     category = "unknown"
                 if kind == 23:
                     eventkind = "exchange" if category == "cx" else "wait" if category == "wait" else "range"
@@ -501,7 +505,7 @@ def load_gftrace(path, metadata=None, mapping=None, windows=True, run_id=None):
                             e["args"][field] = _integer(declared_frame[field], "frame " + field)
                 if kind == 23:
                     e["args"].update(substep_mode=mode,
-                                     category_source="metadata" if str(kind) in categories or kind in categories else "sub_site_table" if code in GF_SUB_SITES else "unknown_site")
+                                     category_source="metadata" if str(kind) in categories or kind in categories else "sub_site_table" if code in sub_sites else "unknown_site")
                 if eventkind == "wait":
                     e["args"]["wait_object"] = stages.get(code, "site.%d" % code)
                 if kind in open_by_kind:
@@ -557,4 +561,8 @@ def load_gftrace(path, metadata=None, mapping=None, windows=True, run_id=None):
         session["provenance"].append({"filename": Path(metadata).name, "sha256": _digest(metadata), "kind": "metadata"})
     if mapping is not None and not isinstance(mapping, dict):
         session["provenance"].append({"filename": Path(mapping).name, "sha256": _digest(mapping), "kind": "mapping"})
+    plugin_raw = json.dumps(plugin, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    session.setdefault("raw_files", {})["gftrace/model-plugin.json"] = plugin_raw
+    session["provenance"].append({"kind": "model_plugin", "profile_id": plugin["profile_id"],
+                                  "model_plugin_sha256": hashlib.sha256(plugin_raw.encode("utf-8")).hexdigest()})
     return session

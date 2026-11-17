@@ -110,6 +110,7 @@ def make_parser():
     q.add_argument('--input', required=True); q.add_argument('--metadata'); q.add_argument('--mapping')
     q.add_argument('--output', required=True)
     q.add_argument('--no-windows', action='store_true', help='GFTRACE2: omit derived PMU windows; keep cumulative readings and aggregates')
+    q.add_argument('--model', help='model plugin name or JSON path for original GFTRACE input')
     q = c.add_parser('export'); q.add_argument('session')
     q.add_argument('--format', choices=['html','chrome-trace','json','csv'], required=True)
     q.add_argument('--output', required=True)
@@ -118,6 +119,7 @@ def make_parser():
     q.add_argument('--output', required=True, help='self-contained HTML report')
     q.add_argument('--session-output', help='also save the merged native .lxtrace archive or JSON')
     q.add_argument('--run-id', help='explicit run grouping for older sessions without a shared run ID')
+    q.add_argument('--model', help='model plugin name or JSON path, applied only to original GFTRACE inputs')
     q = c.add_parser('production-report', help='derive calibrated production attribution from separate timing/counting runs')
     source = q.add_mutually_exclusive_group(required=True)
     source.add_argument('--timing', help='ticks-only GFTRACE2 timing run; counting runs align by logical work, not timestamps')
@@ -125,12 +127,20 @@ def make_parser():
     q.add_argument('--count', action='append', default=[], metavar='RUN=PATH', help='GFTRACE2 counting run, repeat in event-priority order')
     q.add_argument('--hardware', help='versioned hardware profile name or JSON path')
     q.add_argument('--model', help='engine/model profile name or JSON path')
+    q.add_argument('--model-config', help='model configuration JSON for the plugin FLOP numerator; requires --flop-workload')
+    q.add_argument('--flop-workload', help='JSON with T/B/T_c/layers; a numerator does not establish timing-window coverage')
     q.add_argument('--strict-alignment', action='store_true', help='reject rate fallback when dynamic work changes a block/mode key')
     q.add_argument('--bin-ms', type=float, default=0.2, help='aggregate projection bin size in milliseconds (default: 0.2)')
     q.add_argument('--reference', help='optional external reference JSON, displayed separately and never used to compute results')
     q.add_argument('--output', required=True, help='self-contained production attribution HTML')
     q.add_argument('--analysis-output', help='analysis JSON (defaults to OUTPUT.analysis.json)')
     q.add_argument('--evidence-output', help='optional resource .lxtrace archive of calibrated aggregate evidence')
+    c.add_parser('plugins', help='list shipped hardware profiles and model plugins')
+    q = c.add_parser('model-flops', help='calculate a model plugin numerator without assuming trace-window correspondence')
+    q.add_argument('--model', required=True, help='shipped plugin name or JSON path')
+    q.add_argument('--config', required=True, help='model configuration JSON')
+    q.add_argument('--workload', required=True, help='workload JSON with T/B/T_c/layers')
+    q.add_argument('--output', required=True, help='new numerator JSON file')
     q = c.add_parser('compact-info', help='stream-check an entire compact capture without building an in-memory timeline')
     q.add_argument('input'); q.add_argument('--output', help='summary JSON; default: stdout')
     q = c.add_parser('compact-select', help='copy complete selected compact thread instances, retaining source quality and provenance')
@@ -186,12 +196,33 @@ def main(argv=None):
             return code if code >= 0 else 1
         elif args.command == 'report':
             from .report import write_unified_report
-            session = write_unified_report(args.inputs, args.output, args.session_output, args.run_id)
+            session = write_unified_report(args.inputs, args.output, args.session_output, args.run_id, model=args.model)
             print('records='+str(len(session['records']))+' html='+str(args.output))
         elif args.command == 'production-report':
             from .attribution.workflow import run_report
             analysis = run_report(args)
             print('attribution='+str(analysis['schema_version'])+' html='+str(args.output))
+        elif args.command == 'plugins':
+            from .plugins import list_models
+            from .attribution.hardware import load_hardware
+            hw = load_hardware()
+            print(json.dumps({'models': list_models(), 'hardware': [
+                {'profile_id': hw['profile_id'], 'algorithm': hw['decomposition']}],
+                'custom_profiles': 'JSON paths supported by --model and --hardware'}, ensure_ascii=False, indent=2))
+            return 0
+        elif args.command == 'model-flops':
+            from .plugins import calculate_flops
+            from .attribution.workflow import read_json
+            result = calculate_flops(args.model, read_json(args.config), read_json(args.workload))
+            inputs = [args.config, args.workload] + ([args.model] if Path(args.model).is_file() else [])
+            target = Path(args.output).resolve()
+            if target.exists() or any(target == Path(p).resolve() or target in Path(p).resolve().parents
+                                      or Path(p).resolve() in target.parents for p in inputs):
+                raise ValueError('model FLOP output must use a new path separate from all inputs')
+            encoded = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)+'\n'
+            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+            with Path(args.output).open('x', encoding='utf-8') as stream:
+                stream.write(encoded)
         elif args.command == 'compact-info':
             from .compact_stream import inspect_compact
             if args.output and (Path(args.output).resolve() == Path(args.input).resolve() or Path(args.output).exists()):
@@ -230,6 +261,8 @@ def main(argv=None):
             if args.format == 'csv': export_csv(result, args.output)
             else: write_json(result, args.output)
         elif args.command == 'import':
+            if args.model and args.type != 'gftrace':
+                raise ValueError('--model applies only to original GFTRACE input')
             if args.no_windows and args.type != 'gftrace':
                 raise ValueError('--no-windows is a GFTRACE2 import option')
             if args.type == 'schedule':
@@ -238,7 +271,7 @@ def main(argv=None):
                 s = import_schedule(args.input,args.metadata)
             elif args.type in ('sdk','gftrace'):
                 from .importers import load_sdk, load_gftrace
-                imported = load_sdk(args.input) if args.type == 'sdk' else load_gftrace(args.input,args.metadata,args.mapping,windows=not args.no_windows)
+                imported = load_sdk(args.input) if args.type == 'sdk' else load_gftrace(args.input,args.metadata,args.mapping,windows=not args.no_windows,model=args.model)
                 s = R.validate_session(imported) if imported.get('schema_version') == R.SCHEMA else R.migrate_v1(imported)
             else: s = R.load_session(args.input)
             R.write_session(s, args.output)

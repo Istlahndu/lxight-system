@@ -36,6 +36,8 @@ python -B -m lxtrace production-report --timing capture/trace-tT.bin --count tA=
 
 此流程只读取现有文件，使用 Python 标准库，不需要新增 root 权限、PMU 权限或 NumPy。产生 RAW PMU 数据本身仍取决于平台权限与引擎插桩能力。
 
+使用其他引擎时，通过 `--model NAME_OR_JSON` 选择阶段与子步骤插件、`--hardware NAME_OR_JSON` 选择硬件配置。模型插件与绘图代码独立；没有配置的子步骤视图保持不可用，不套用默认 GLM 的 dense 规则。完整示例见[硬件配置与模型插件指南](model-plugins.md)。
+
 ## 对齐与估计口径
 
 软件先验证各运行的 token、batch 等已声明配置、相位与层字典、池线程集合、逐线程层／相位块序列和采样帧一致，再按“线程 × 工作块 × 模式”对齐。不同运行的绝对时间戳不会合并为同一次执行。
@@ -93,12 +95,28 @@ python -B -m lxtrace production-report --mfu-counts complete-counts.json --outpu
 
 该入口与 `--timing` 互斥，避免把另一配置的完整 MFU 混入当前 trace。可用 `--reference reference.json` 加入外部对照；参考值始终单独标为未复算，不参与计算。
 
+### 从模型插件计算分子
+
+模型插件可以提供已支持的 FLOP 适配器。单独计算时使用：
+
+```bash
+python -B -m lxtrace model-flops --model glm5f --config model/config.json --workload workload.json --output out/model-flops.json
+```
+
+`workload.json` 显式声明 `T`、`B`、`T_c` 和首尾均包含的层范围 `layers`。例如 `{"T":4096,"B":1,"T_c":0,"layers":[0,44]}` 表示从第 0 层到第 44 层、4096 个输入 token、单请求且无已有上下文的工作量；层数必须符合所提供的模型配置。
+
+在 tT／计数归因中加入 `--model-config model/config.json --flop-workload workload.json`，可以一并保存插件计算的分子、分阶段量与配置哈希。两个参数必须一起提供。该操作不自动认定 trace 是完整窗口；相同 token 数或所选层数不足以证明采集覆盖、业务操作与模型 FLOP 完全一致。缺少同窗口证明、完整池／帧时间或必要计数时，MFU 仍显示 `unavailable`。
+
+这两个参数仅用于 `--timing` 模式。独立的 `--mfu-counts` 模式继续使用汇总 JSON 中应用声明的同窗口 `frame.flop`，不接收另一份配置来替换分子。
+
+`generic-transformer` 提供可修改的组件式声明示例，只覆盖其列出的投影与激活，不可当作完整 GLM、DeepSeek 或其他生产模型的分子。模型插件定义与支持的适配器见[模型插件指南](model-plugins.md)。
+
 ## 硬件与模型配置
 
-默认硬件配置为 `lx2-profiled-v1`，模型／引擎配置为 `glm5f`。使用 `--hardware FILE.json`、`--model FILE.json` 提供其他版本。配置格式及示例在 `lxtrace/attribution/profiles/`。
+默认硬件配置为 `lx2-profiled-v1`，模型／引擎配置为 `glm5f`。使用 `python -m lxtrace plugins` 查看内置配置，通过 `--hardware NAME_OR_JSON`、`--model NAME_OR_JSON` 选择其他版本。硬件及历史 GLM 配置在 `lxtrace/attribution/profiles/`，通用模型插件在 `lxtrace/plugins/`。未传入这些参数时仍沿用历史默认；原有模型 v1 JSON 和 GFTRACE 数据继续兼容。
 
-硬件配置统一定义核数、频率、矩阵指令周期与 FLOP、单元吞吐、重叠模型和 dense 标定，报告记录配置版本与来源。默认归因标定保留交接 golden 的历史口径；该口径与较新微基准的部分延迟值不同，更换标定版本可能改变分类结果。
+硬件配置统一定义核数、频率、矩阵指令周期与 FLOP、单元吞吐、PMU 语义角色与 RAW 编码、重叠模型和子步骤标定，报告记录配置版本与来源。原始 RAW 读数与编码继续保留，算法通过硬件事件字典取数。当前分解后端为 `lx2-sme-v1`；不同事件语义或分解公式需实现相应后端，不能仅更换芯片名称。默认归因标定保留交接 golden 的历史口径；该口径与较新微基准的部分延迟值不同，更换标定版本可能改变分类结果。
 
-模型／引擎配置定义计算、交换、等待、池调用外模式及交换型相位、预期池线程和 dense 矩阵块参数。模型名称不会让工具自动识别未插桩的推理引擎。
+模型／引擎插件定义阶段与 site 字典、计算／交换／等待／池调用外模式、交换型相位、预期池线程、可选子步骤与 FLOP 适配器。阶段族、颜色、标题和可选面板被转换成通用 `presentation` 描述，由同一呈现层绘图；绘图代码不按模型名称选择规则。模型名称不会让工具自动识别未插桩的推理引擎，也不代表该模型已完成生产验证。插件配置、模型分子计算和离线生成报告均无需新增 root 权限。
 
 算法移植来源：`glm5f-dsub@148a1202`（对齐与 dense）、`glm5f-tl3@850d5a0f`（三种分解）、`mfu-kit-tl3@09d3036a`（硬件事实与 MFU）。产品运行使用仓库内实现，不依赖交接包脚本或 golden 文件。

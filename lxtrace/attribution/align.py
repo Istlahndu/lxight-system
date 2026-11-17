@@ -15,7 +15,6 @@ from ..gftrace import (DRIVER_PAIRS, K, NOSTAGE, _meta, driver_intervals,
                        pool_segments, read_gftrace2)
 
 TAIL = 0xFFFE
-MODES = ("busy", "push", "gath", "bar", "xw", "spin", "idle", "deqg", "mmg", "deqd", "mmd", "swi", "pkg", "pkd")
 MODEL_EVIDENCE = "model_calibrated:cross_run_counter_rate"
 
 
@@ -49,11 +48,11 @@ def _configuration(meta, text):
     return config, dies
 
 
-def _segment_buffer(buffer):
+def _segment_buffer(buffer, model=None):
     events = buffer["ev"]
     # Reuse validation and the chained SUB / wait-resume semantics from the
     # existing importer. Work-block identities are additional derived metadata.
-    segments = pool_segments(events, "production thread " + _thread_id((buffer["die"], buffer["dom"], buffer["thr"])))
+    segments = pool_segments(events, "production thread " + _thread_id((buffer["die"], buffer["dom"], buffer["thr"])), model=model)
     closing, labels, layer = [], [], -1
     for index, (_tick, kind, code, _aux) in enumerate(events):
         if kind == K["CALL_B"]:
@@ -78,13 +77,18 @@ def _segment_buffer(buffer):
     return {"labels": labels, "groups": grouped, "segments": result}
 
 
-def _read_run(path, metadata=None, name=None):
+def _read_run(path, metadata=None, name=None, model=None):
     path = Path(path)
     if metadata is None:
         metadata = path.with_suffix(".txt")
         if not metadata.is_file():
             raise ValueError("production attribution requires GFTRACE2 PMU/configuration metadata: " + str(metadata))
     meta, text, meta_name = _meta(metadata)
+    from ..plugins import load_model
+    model = load_model(model)
+    if 'GFTRACE2' not in model['trace']['format']:
+        raise ValueError('selected model plugin does not support GFTRACE2')
+    meta['stages'] = {**model['trace'].get('stages', {}), **{str(k): v for k, v in meta['stages'].items()}}
     frequency, buffers = read_gftrace2(path)
     if meta.get("frequency_hz", frequency) != frequency:
         raise ValueError("GFTRACE2 binary and metadata timer frequencies disagree")
@@ -99,7 +103,7 @@ def _read_run(path, metadata=None, name=None):
         if buffer["dom"] >= 0:
             if not buffer["ev"]:
                 raise ValueError("empty production pool thread buffer")
-            threads[slot] = dict(buffer, segmentation=_segment_buffer(buffer))
+            threads[slot] = dict(buffer, segmentation=_segment_buffer(buffer, model))
         else:
             if buffer["die"] in drivers:
                 raise ValueError("multiple driver buffers for one die")
@@ -218,7 +222,7 @@ def _windows(base, origin):
 
 
 def align_runs(timing_path, count_paths, core_frequency_hz, *, timing_metadata=None,
-               count_metadata=None, strict_alignment=False, expected_pool_threads=None):
+               count_metadata=None, strict_alignment=False, expected_pool_threads=None, model=None):
     """Carry first-listed event rates onto tT block-mode aggregates.
 
     ``count_paths`` is an ordered mapping such as ``{'tA': path, 'tB': path}``.
@@ -232,14 +236,18 @@ def align_runs(timing_path, count_paths, core_frequency_hz, *, timing_metadata=N
         raise ValueError("at least one named counting run is required")
     if expected_pool_threads is not None and (type(expected_pool_threads) is not int or expected_pool_threads <= 0):
         raise ValueError("expected_pool_threads must be a positive integer")
-    base = _read_run(timing_path, timing_metadata, "tT")
+    from ..plugins import load_model
+    plugin = load_model(model)
+    mode_order = list(dict.fromkeys(['busy'] + plugin['exchange_modes'] + plugin['wait_modes'] + plugin['idle_modes'] + plugin['compute_modes']))
+    mode_rank = {mode: i for i, mode in enumerate(mode_order)}
+    base = _read_run(timing_path, timing_metadata, "tT", plugin)
     if base["metadata"]["pmu_state"] not in ("ticks_only", "disabled"):
         raise ValueError("the timing run must declare ticks-only or disabled PMU collection")
     counts = []
     for name, path in count_paths.items():
         if not isinstance(name, str) or not name or name == "tT":
             raise ValueError("counting run names must be nonempty and distinct from tT")
-        run = _read_run(path, (count_metadata or {}).get(name), name)
+        run = _read_run(path, (count_metadata or {}).get(name), name, plugin)
         if run["metadata"]["pmu_state"] != "counting" or not run["codes"]:
             raise ValueError("counting run requires known PMU event codes: " + name)
         if set(run["threads"]) != set(base["threads"]):
@@ -298,7 +306,7 @@ def align_runs(timing_path, count_paths, core_frequency_hz, *, timing_metadata=N
                     for code, value in zip(["0x0011"] + run["codes"], row["values"]):
                         target[code] = target.get(code, 0) + value
         ids = {}
-        for (block, mode), base_row in sorted(sb["groups"].items(), key=lambda pair: (pair[0][0], MODES.index(pair[0][1]))):
+        for (block, mode), base_row in sorted(sb["groups"].items(), key=lambda pair: (pair[0][0], mode_rank.get(pair[0][1], len(mode_rank)), pair[0][1])):
             layer, stage_code = sb["labels"][block]
             stage = _stage(base["metadata"], stage_code)
             ticks, cycles = base_row["ticks"], base_row["ticks"] * cpt

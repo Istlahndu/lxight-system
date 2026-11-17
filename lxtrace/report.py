@@ -110,7 +110,7 @@ def _digests(value):
     return found
 
 
-def _load(path, kind):
+def _load(path, kind, model=None):
     legacy = None
     exact = None
     if kind == 0:
@@ -122,7 +122,7 @@ def _load(path, kind):
             session = load_compact(path)
         exact = path.read_bytes()
         if kind in (4, 5):
-            imported = load_gftrace(path)
+            imported = load_gftrace(path, model=model)
             if imported.get("schema_version") == resource.SCHEMA:
                 session = imported
             else:
@@ -262,14 +262,14 @@ def _record_keys(item):
     return result
 
 
-def _inputs(paths):
+def _inputs(paths, model=None):
     selected = []
     for path, discovered, kind in _paths(paths):
         if any(path == item["path"] for item in selected):
             raise ValueError("duplicate session input: " + str(path))
         if discovered and kind == 3 and any(_sha(path.read_bytes()) in item["evidence"] for item in selected):
             continue
-        item = _load(path, kind)
+        item = _load(path, kind, model=model)
         item["record_keys"] = _record_keys(item)
         duplicate = next((old for old in selected if item["sha256"] == old["sha256"]
                           or item["evidence"] and item["evidence"] == old["evidence"]
@@ -332,7 +332,7 @@ def _references(value, prefix, resources, sources, clocks):
     return result
 
 
-def merge_sessions(paths, run_id=None):
+def merge_sessions(paths, run_id=None, model=None):
     """Return a v2 session from one input or compatible same-run software inputs.
 
     A directory discovers immediate session children, preferring v2 over v1/raw
@@ -342,7 +342,7 @@ def merge_sessions(paths, run_id=None):
     """
     if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
         raise ValueError("run_id must be a nonempty string")
-    items = _inputs(paths)
+    items = _inputs(paths, model=model)
     if len(items) == 1:
         result = copy.deepcopy(items[0]["session"])
         result.pop("archive", None)
@@ -518,7 +518,7 @@ def merge_sessions(paths, run_id=None):
     return resource.validate_session(result)
 
 
-def write_unified_report(inputs, output, session_output=None, run_id=None):
+def write_unified_report(inputs, output, session_output=None, run_id=None, model=None):
     """Write the fixed web viewer and optionally a new JSON/native session.
 
     Inputs and existing outputs are never overwritten. The function does not
@@ -527,7 +527,13 @@ def write_unified_report(inputs, output, session_output=None, run_id=None):
     output = Path(output).resolve()
     session_path = Path(session_output).resolve() if session_output is not None else None
     inputs = inputs if isinstance(inputs, (str, os.PathLike)) else list(inputs)
-    input_paths = [item[0] for item in _paths(inputs)]
+    detected = _paths(inputs)
+    if model is not None:
+        from .plugins import load_model
+        model = load_model(model)
+        if not any(kind in (4, 5) for _, _, kind in detected):
+            raise ValueError("--model applies to original GFTRACE inputs; normalized sessions retain their imported semantics")
+    input_paths = [item[0] for item in detected]
     for target in (output, session_path):
         if target is None:
             continue
@@ -540,7 +546,7 @@ def write_unified_report(inputs, output, session_output=None, run_id=None):
             raise ValueError("session output already exists; choose a new path")
         if output == session_path or session_path in output.parents or output in session_path.parents:
             raise ValueError("HTML and session output paths must be separate")
-    session = merge_sessions(inputs, run_id=run_id)
+    session = merge_sessions(inputs, run_id=run_id, model=model)
     if session_path is not None:
         resource.write_session(session, session_path)
     resource.write_report(session, output, overwrite=False)

@@ -4,11 +4,40 @@
   "model": "GLM-5.3-Flash",
   "engine": "glm5f merged prefill",
   "revision": "glm5f-dsub@148a1202",
-  "exchange_stages": ["swiglu_ag", "combine", "kda_rs", "comb_wait", "comb_push", "dsa_rs", "hc_push", "hc_wait", "xwait", "x3_gather"],
-  "compute_modes": ["busy", "deqg", "mmg", "deqd", "mmd", "swi", "pkg", "pkd"],
-  "exchange_modes": ["push", "gath"],
-  "wait_modes": ["bar", "xw", "spin"],
-  "idle_modes": ["idle"],
+  "exchange_stages": [
+    "swiglu_ag",
+    "combine",
+    "kda_rs",
+    "comb_wait",
+    "comb_push",
+    "dsa_rs",
+    "hc_push",
+    "hc_wait",
+    "xwait",
+    "x3_gather"
+  ],
+  "compute_modes": [
+    "busy",
+    "deqg",
+    "mmg",
+    "deqd",
+    "mmd",
+    "swi",
+    "pkg",
+    "pkd"
+  ],
+  "exchange_modes": [
+    "push",
+    "gath"
+  ],
+  "wait_modes": [
+    "bar",
+    "xw",
+    "spin"
+  ],
+  "idle_modes": [
+    "idle"
+  ],
   "mode_labels": {
     "busy": "领活与其他未细分工作",
     "push": "显式推送交换",
@@ -26,15 +55,218 @@
     "pkd": "down X3 打包"
   },
   "expected_pool_threads": 592,
-  "dense": {"stage": "dense_gemm", "matrix_steps": {"mmg": 8, "mmd": 6}},
+  "dense": {
+    "stage": "dense_gemm",
+    "matrix_steps": {
+      "mmg": 8,
+      "mmd": 6
+    },
+    "backend": "dense_za_v1"
+  },
   "stage_families": {
-    "expert": ["router", "group", "gate_up", "swiglu_ag", "down", "combine", "moe_sum", "comb_wait", "comb_acc", "comb_push", "x3_gather"],
-    "dense": ["dense_gemm"],
-    "shared": ["sh_gate_up", "sh_down"],
-    "KDA": ["kda_proj", "kda_fb_conv", "kda_core", "kda_gnorm", "kda_oproj", "kda_rs"],
-    "DSA": ["dsa_qkv", "dsa_q", "dsa_index", "dsa_attn", "dsa_oproj", "dsa_rs", "dsa_gather", "dsa_qk", "dsa_softmax", "dsa_pv", "dsa_out", "dsa_vproj", "dsa_ix_pool", "dsa_ix_score", "dsa_ix_select"],
-    "entry_exit": ["entry", "hc_a", "hc_f", "hc_push", "hc_wait", "hc_norm", "attn_exit", "ffn_exit"]
+    "expert": {
+      "label": "expert",
+      "color": "#b69b50",
+      "stages": [
+        "router",
+        "group",
+        "gate_up",
+        "swiglu_ag",
+        "down",
+        "combine",
+        "moe_sum",
+        "comb_wait",
+        "comb_acc",
+        "comb_push",
+        "x3_gather"
+      ]
+    },
+    "dense": {
+      "label": "dense",
+      "color": "#9872ac",
+      "stages": [
+        "dense_gemm"
+      ]
+    },
+    "shared": {
+      "label": "shared",
+      "color": "#5a9e95",
+      "stages": [
+        "sh_gate_up",
+        "sh_down"
+      ]
+    },
+    "KDA": {
+      "label": "KDA",
+      "color": "#5c89b4",
+      "stages": [
+        "kda_proj",
+        "kda_fb_conv",
+        "kda_core",
+        "kda_gnorm",
+        "kda_oproj",
+        "kda_rs"
+      ]
+    },
+    "DSA": {
+      "label": "DSA",
+      "color": "#9a7db4",
+      "stages": [
+        "dsa_qkv",
+        "dsa_q",
+        "dsa_index",
+        "dsa_attn",
+        "dsa_oproj",
+        "dsa_rs",
+        "dsa_gather",
+        "dsa_qk",
+        "dsa_softmax",
+        "dsa_pv",
+        "dsa_out",
+        "dsa_vproj",
+        "dsa_ix_pool",
+        "dsa_ix_score",
+        "dsa_ix_select"
+      ]
+    },
+    "entry_exit": {
+      "label": "entry_exit",
+      "color": "#7d929e",
+      "stages": [
+        "entry",
+        "hc_a",
+        "hc_f",
+        "hc_push",
+        "hc_wait",
+        "hc_norm",
+        "attn_exit",
+        "ffn_exit"
+      ]
+    }
   },
   "flop_policy": "The numerator must come from the model adapter for the same complete measurement window. No FLOP is inferred from observed MOPA or a golden MFU percentage.",
-  "provenance": [{"source": "glm5f-dsub@148a1202; GLM-5.3-Flash handoff plugin 2026-11-16", "scope": "phase/mode classification and dense K chunks"}]
+  "provenance": [
+    {
+      "source": "glm5f-dsub@148a1202; GLM-5.3-Flash handoff plugin 2026-11-16",
+      "scope": "phase/mode classification and dense K chunks"
+    }
+  ],
+  "trace": {
+    "format": [
+      "GFTRACE1",
+      "GFTRACE2"
+    ],
+    "stages": {
+      "0": "entry",
+      "1": "hc_a",
+      "2": "attn_exit",
+      "3": "hc_f",
+      "4": "router",
+      "5": "group",
+      "6": "gate_up",
+      "7": "swiglu_ag",
+      "8": "down",
+      "9": "combine",
+      "10": "ffn_exit",
+      "11": "kda_proj",
+      "12": "kda_fb_conv",
+      "13": "kda_core",
+      "14": "kda_oproj",
+      "15": "kda_rs",
+      "16": "comb_wait",
+      "17": "comb_acc",
+      "18": "comb_push",
+      "19": "dsa_qkv",
+      "20": "dsa_q",
+      "21": "dsa_index",
+      "22": "dsa_attn",
+      "23": "dsa_oproj",
+      "24": "dsa_rs",
+      "25": "hc_push",
+      "26": "hc_wait",
+      "27": "hc_norm",
+      "28": "xwait",
+      "29": "sh_gate_up",
+      "30": "sh_down",
+      "31": "dense_gemm",
+      "32": "moe_sum",
+      "33": "x3_gather",
+      "34": "kda_gnorm",
+      "35": "dsa_gather",
+      "36": "dsa_qk",
+      "37": "dsa_softmax",
+      "38": "dsa_pv",
+      "39": "dsa_out",
+      "40": "dsa_vproj",
+      "41": "dsa_ix_pool",
+      "42": "dsa_ix_score",
+      "43": "dsa_ix_select"
+    },
+    "sites": {
+      "1": {
+        "mode": "push",
+        "category": "cx"
+      },
+      "2": {
+        "mode": "gath",
+        "category": "cx"
+      },
+      "3": {
+        "mode": "deqg",
+        "category": "vec"
+      },
+      "4": {
+        "mode": "mmg",
+        "category": "mat"
+      },
+      "5": {
+        "mode": "deqd",
+        "category": "vec"
+      },
+      "6": {
+        "mode": "mmd",
+        "category": "mat"
+      },
+      "7": {
+        "mode": "swi",
+        "category": "vec"
+      },
+      "8": {
+        "mode": "pkg",
+        "category": "vec"
+      },
+      "9": {
+        "mode": "pkd",
+        "category": "vec"
+      }
+    },
+    "mode_categories": {
+      "busy": "unknown",
+      "bar": "wait",
+      "xw": "wait",
+      "spin": "wait",
+      "idle": "drv",
+      "push": "cx",
+      "gath": "cx",
+      "deqg": "vec",
+      "deqd": "vec",
+      "swi": "vec",
+      "pkg": "vec",
+      "pkd": "vec",
+      "mmg": "mat",
+      "mmd": "mat"
+    }
+  },
+  "flop": {
+    "adapter": "glm5f_prefill.v1",
+    "definition": "GLM-5.3-Flash reference prefill numerator; glm5f-dsub@148a1202, operation conventions from the handoff FLOP definition. Includes reference KDA/DSA, routed and shared expert work and one output head per request; excludes padding/recomputation/MTP/integer lookup work."
+  },
+  "presentation": {
+    "dense_title": "Dense · 子步骤归因",
+    "views": {
+      "dense_enabled": true,
+      "dense_title": "Dense · 子步骤归因"
+    },
+    "stage_colors": {}
+  }
 }

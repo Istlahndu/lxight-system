@@ -60,7 +60,7 @@ python3 -m lxtrace record --profile proc-sample \
 
 该命令默认生成 `inference.html`。`proc-sample` 仅观测直接启动进程的线程；包装多进程启动器时可能只看到启动器自身。要查看各 rank 的矩阵、向量、交换与等待流水线，需按 [SDK 接入指南](docs/sdk-quickstart.md) 将当前 SDK 编译接入各工作进程，然后使用 `--profile basic`；启动器必须等待全部工作进程正常退出。
 
-首次使用请显式选择采集配置。默认的 `resource` 要求连续调度等必需来源，当前来源不满足时会在业务启动前失败；`basic` 也不会自动识别未接入 SDK 的推理程序。GLM、DeepSeek 等引擎的业务语义需要适配，当前尚无自动算子插件。完整的配置、接入、报告与导出步骤见下文及 SDK 接入指南。
+首次使用请显式选择采集配置。默认的 `resource` 要求连续调度等必需来源，当前来源不满足时会在业务启动前失败；`basic` 也不会自动识别未接入 SDK 的推理程序。GLM、DeepSeek 等引擎仍需在业务入口插桩；已有 GFTRACE 数据可通过[模型插件](docs/model-plugins.md)声明阶段、子步骤类别和 FLOP 口径。插件不自动插桩或识别算子。完整的配置、接入、报告与导出步骤见下文及 SDK 接入指南。
 
 ## 1. 产品用途与接入方式
 
@@ -73,7 +73,7 @@ python3 -m lxtrace record --profile proc-sample \
 | 外部进程采集 | 通过本工具启动已有推理命令，无需修改应用代码 | 线程状态与 CPU 离散样本，或用户态任务级 cycles / instructions 计数窗 |
 | C/C++ SDK 接入 | 在推理引擎、执行器或原生扩展中标记业务边界 | 应用定义的请求、阶段、层和算子范围，显式复制、异步请求及等待范围 |
 
-GLM、DeepSeek 是被分析应用的模型类型。本版本提供通用采集接口，尚未提供针对这些模型或 PyTorch、vLLM 等框架的自动适配插件。要查看 prefill、decode、Attention、MoE 或通信算子等业务名称，需由引擎在相应执行入口接入 SDK。现版本的框架兼容性与成熟推理引擎端到端性能仍需结合实际部署验证。
+GLM、DeepSeek 是被分析应用的模型类型。本版本提供通用采集接口和声明式 GFTRACE 模型插件，内置 `glm5f` 与供接入参考的 `generic-transformer`。后者不代表某个生产模型的完整计算图；DeepSeek 等模型仍需提供自身字典、计算口径与真实数据验证。工具尚未自动适配 PyTorch、vLLM 等框架。要查看 prefill、decode、Attention、MoE 或通信算子等业务名称，需由引擎在相应执行入口接入 SDK 或输出受支持的 trace。现版本的框架兼容性与成熟推理引擎端到端性能仍需结合实际部署验证。
 
 ## 2. 功能范围
 
@@ -87,13 +87,14 @@ GLM、DeepSeek 是被分析应用的模型类型。本版本提供通用采集�
 | 软件语义采集 | C ABI、C++11 RAII 及执行器回调适配接口，支持范围、帧、请求关联与跨线程上下文 |
 | 统一报告 | `record` 默认生成自包含 HTML；`report` 从单会话、同目录会话或多个输入生成统一报告，支持同节点软件多进程及同轮 CNTVCT 软件/PMU 时间线 |
 | GFTRACE 导入 | 原生识别 GFTRACE1 / GFTRACE2，保留软件子步骤、计数帧元数据、CNTVCT 原始时间及 GFTRACE2 累计 PMU 读数 |
+| 模型插件 | 硬件事实与事件字典、模型阶段／site 与 FLOP 口径、通用呈现三层分离；`--model` 选择内置或外部 JSON，绘图代码按描述生成视图 |
 | 调度数据导入 | 按约定格式导入 switch JSONL，重建连续驻留并保留迁核、丢失、未知与未闭合状态 |
 | 资源分析 | 在具备相应调度与分配证据时，计算核时、墙钟并集、并发、容量及 target / other / idle / unknown 覆盖 |
 | 交互分析 | 资源与线程选择、时间选区、缩放平移、事件搜索、软件执行轨及证据详情 |
 | 数据导出 | 自包含 HTML、原生会话 JSON、分析 JSON / CSV、Trace Event |
 | 会话管理 | `.lxtrace` 归档、原始文件 SHA-256 校验、派生数据与索引重建、历史软件记录导入 |
 
-GFTRACE1 软件事件导入支持连续子步骤切换：已知 SUB 站点的下一次开始可作为上一子步骤的结束边界，并保留边界依据。站点 1/2 为交换，4/6 为矩阵，3/5/7/8/9 为向量/标量；显式类别元数据仍优先，未知站点保持 unknown。帧元数据中的 `counting`、`parts`、`tokens` 会保留；缺少 `counting` 时不推断是否为计数帧。
+GFTRACE1 软件事件导入支持连续子步骤切换：已知 SUB 站点的下一次开始可作为上一子步骤的结束边界，并保留边界依据。默认 `glm5f` 插件中，站点 1/2 为交换，4/6 为矩阵，3/5/7/8/9 为向量/标量；自定义插件使用自身站点字典。显式类别元数据仍优先，未知站点保持 unknown。帧元数据中的 `counting`、`parts`、`tokens` 会保留；缺少 `counting` 时不推断是否为计数帧。
 
 GFTRACE2 导入直接生成原生 v2 会话。产品保留完整二进制证据及累计 PMU 读数，另生成读数差分窗口和按 die、相位、模式、事件码的合计。软件相位归属遵循同调用内下一次结束相位的屏障；等待结束后恢复当前子步骤。驱动线程的 PMU 按相邻读数排他归属，避免嵌套帧与层范围重复统计。`pmu ticks` 的零数组保留为时钟运行的原始证据，不解释成实测硬件事件全部为零。
 
@@ -296,7 +297,7 @@ python3 -m lxtrace report /path/to/trace-tT.bin \
   --output "$run_dir/timeline.html"
 ```
 
-导入器按文件头自动识别版本，默认读取同名 `.txt`；可用 `--metadata PATH` 指定元数据。GFTRACE2 的 `--no-windows` 省略派生的逐窗 PMU 记录，仍保留原始累计读数、软件区间及计数合计，适合较大的数据文件。原始二进制在会话归档中以带编码声明的 base64 文本保存，并记录解码后的 SHA-256；计数窗口可追溯至 buffer、事件索引、字节偏移和累计端点。未知事件码列保留未知，不推断硬件含义。
+导入器按文件头自动识别版本，默认读取同名 `.txt`；可用 `--metadata PATH` 指定元数据。原始 GFTRACE 的 `import` 与 `report` 支持 `--model NAME_OR_JSON`，默认 `glm5f` 保留旧格式解释。GFTRACE2 的 `--no-windows` 省略派生的逐窗 PMU 记录，仍保留原始累计读数、软件区间及计数合计，适合较大的数据文件。原始二进制在会话归档中以带编码声明的 base64 文本保存，并记录解码后的 SHA-256；计数窗口可追溯至 buffer、事件索引、字节偏移和累计端点。未知事件码列保留未知，不推断硬件含义。
 
 同轮多文件汇集时，GFTRACE 元数据需声明 `host_id`、`boot_id`、`run_id`，可另声明 `counter_domain_id`。例如这些身份来自采集端实际记录，不能只为绕过检查而填写相同值：
 
@@ -316,6 +317,8 @@ python3 -m lxtrace production-report --timing capture/trace-tT.bin --count tA=ca
 ```
 
 该命令生成固定模板 HTML 与完整分析 JSON，提供工作块对齐、推算上下界、三种分解、dense 归因及 MFU 图。模型推算保持聚合证据，时间图是 tT 上的估计量投影；截取数据不会冒充全机 MFU。输入配置、缺失计数、回退与来源均保留，无新增 root 权限或必需依赖。完整输入格式与 MFU 汇总入口见 [生产归因报告使用指南](docs/production-attribution.md)。原有 `report` 仍用于单轮统一流水线。
+
+使用 `python3 -m lxtrace plugins` 查看内置模型与硬件配置。`production-report --model NAME_OR_JSON --hardware NAME_OR_JSON` 选择计算与显示配置；`model-flops --model NAME_OR_JSON --config model-config.json --workload workload.json --output out/flops.json` 可单独计算模型分子。生产归因也可同时接收 `--model-config` 与 `--flop-workload`，但分子可计算并不证明 trace 覆盖相同的完整窗口，证据不足时 MFU 仍为 `unavailable`。完整 JSON 示例和新模型接入步骤见[硬件配置与模型插件指南](docs/model-plugins.md)。
 
 ### 6.4 命令行分析与文件交换
 
@@ -379,11 +382,12 @@ python3 -m lxtrace import --type schedule \
 | `artifacts/local-docs/` | 已归档的测试说明与历史实验文档，不纳入 Git 管理 |
 | [SDK 接入指南](docs/sdk-quickstart.md) | 引擎开发者的编译、打点与采集流程 |
 | [生产归因报告使用指南](docs/production-attribution.md) | 分离计时／计数运行的对齐、三种分解、dense 与 MFU |
+| [硬件配置与模型插件指南](docs/model-plugins.md) | 三层接口、GFTRACE 阶段与子步骤映射、FLOP 分子与显示配置 |
 | [调度流导入说明](docs/scheduler-interchange.md) | 外部调度数据接入格式与解释规则 |
 | [版本支持合同](CONTRACT.txt) | 当前版本的证据边界、支持范围与待验收能力 |
 
 Git 仓库保存软件源码、正式说明、配置、源码示例及回归测试。具体测试运行的日志、会话、离线报告、服务器环境记录和复现说明统一保存在 `artifacts/` 下，由 `.gitignore` 排除。现有实验的说明与完整复现步骤随对应 `artifacts/v2/` 实验目录保留；仓库中的通用使用步骤以本 README 和 SDK 接入指南为准。
 
-修改正式 Markdown 文档后，执行 `python -m pip install -r requirements-docs.txt`、`python tools/build_docs.py` 重建五份 HTML 并校验本地链接。运行软件无需安装此可选文档依赖。需要同步生成 `artifacts/v2/` 服务页面时，使用 `python tools/build_docs.py --served`。
+修改正式 Markdown 文档后，执行 `python -m pip install -r requirements-docs.txt`、`python tools/build_docs.py` 重建六份 HTML 并校验本地链接。运行软件无需安装此可选文档依赖。需要同步生成 `artifacts/v2/` 服务页面时，使用 `python tools/build_docs.py --served`。
 
 完整命令参数以 `python3 -m lxtrace COMMAND --help` 为准；将 `COMMAND` 替换为相应子命令。

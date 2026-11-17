@@ -90,8 +90,15 @@ def run_report(args):
     from .align import align_runs
     from .model import analyze_attribution, analyze_mfu_counts, load_hardware, load_model
     from .report import build_timeline, write_report
+    from ..plugins import calculate_flops, presentation
 
     hardware, model = load_hardware(args.hardware), load_model(args.model)
+    model_config, flop_workload = getattr(args, "model_config", None), getattr(args, "flop_workload", None)
+    if bool(model_config) != bool(flop_workload):
+        raise ValueError("--model-config and --flop-workload must be supplied together")
+    if model_config and not args.timing:
+        raise ValueError("model FLOP plugins are a timing-report option; standalone MFU already declares its matching numerator")
+    numerator = calculate_flops(model, read_json(model_config), read_json(flop_workload)) if model_config else None
     count_inputs = parse_count_inputs(args.count) if args.timing else {}
     if not args.timing and (args.count or args.strict_alignment or args.evidence_output):
         raise ValueError("standalone MFU summary mode does not accept --count, --strict-alignment or --evidence-output")
@@ -99,12 +106,13 @@ def run_report(args):
     analysis_output = Path(args.analysis_output) if args.analysis_output else output.with_suffix(".analysis.json")
     inputs = ([args.timing] + list(count_inputs.values()) if args.timing else [args.mfu_counts])
     inputs.extend(p for p in (args.hardware, args.model, args.reference) if p and Path(p).is_file())
+    inputs.extend(p for p in (model_config, flop_workload) if p)
     output_paths(output, analysis_output, inputs, (args.evidence_output,))
     bin_ns = bin_nanoseconds(args.bin_ms)
     if args.timing:
         aligned = align_runs(args.timing, count_inputs, hardware["facts"]["frequency_hz"],
                              strict_alignment=args.strict_alignment,
-                             expected_pool_threads=model.get("expected_pool_threads"))
+                             expected_pool_threads=model.get("expected_pool_threads"), model=model)
         analysis = analyze_attribution(aligned, hardware=hardware, model=model)
         analysis["config"] = {"kind": "timing_and_counter_runs", "timing_run": aligned["base"],
                               "counting_runs": aligned["counts"], "workload": aligned["metadata"]["configuration"],
@@ -133,6 +141,22 @@ def run_report(args):
                             "sha256": hashlib.sha256(raw).hexdigest(), "label": counts.get("label"), "source": counts.get("source")}],
             "warnings": ["MFU derives from the supplied complete-window summary; no timing trace or hardware boundaries were supplied."],
         }
+    analysis["presentation"] = presentation(model, hardware)
+    # The counter is a model numerator, not evidence that this retained trace
+    # covers that workload. Existing whole-window MFU guards remain in force.
+    if numerator is not None:
+        analysis["model_flops"] = numerator
+        analysis["warnings"].append("Model plugin FLOP numerator is declared separately; timing-window correspondence is unverified and it does not enable MFU.")
+    for kind, profile in (("hardware_profile", hardware), ("model_plugin", model)):
+        canonical = json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        analysis["provenance"].append({"kind": kind, "profile_id": profile["profile_id"],
+                                        "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                                        "content": profile})
+    for kind, path in (("model_configuration", model_config), ("flop_workload", flop_workload)):
+        if path:
+            analysis["provenance"].append({"kind": kind, "path": str(path),
+                                            "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                                            "content": read_json(path)})
     analysis["timeline"] = build_timeline(analysis, bin_ns=bin_ns)
     analysis["analysis_file"] = analysis_link(output, analysis_output)
     analysis["analysis_location"] = str(analysis_output)

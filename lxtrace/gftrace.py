@@ -18,10 +18,16 @@ KINDS = ("CALL_B", "CALL_E", "BAR_A", "BAR_L", "XW_B", "XW_E", "SPIN_B", "SPIN_E
          "FRAME_B", "FRAME_E", "WIN_B", "WIN_E", "EMB_B", "EMB_E", "LAY_B", "LAY_E",
          "WSLOT_B", "WSLOT_E", "PUSH_B", "PUSH_E", "HEAD_B", "HEAD_E", "SUB_B", "SUB_E")
 K = {name: i + 1 for i, name in enumerate(KINDS)}
-SITES = {1: "push", 2: "gath", 3: "deqg", 4: "mmg", 5: "deqd", 6: "mmd", 7: "swi", 8: "pkg", 9: "pkd"}
-MODE_CATEGORY = {"busy": "unknown", "push": "cx", "gath": "cx", "bar": "wait", "xw": "wait", "spin": "wait",
-                 "deqg": "vec", "mmg": "mat", "deqd": "vec", "mmd": "mat", "swi": "vec", "pkg": "vec", "pkd": "vec"}
-MODE_KIND = {"push": "exchange", "gath": "exchange", "bar": "wait", "xw": "wait", "spin": "wait"}
+def _model_tables(model=None):
+    from .plugins import load_model
+    plugin = load_model(model)
+    sites = {int(key): value['mode'] for key, value in plugin['trace']['sites'].items()}
+    categories = plugin['trace']['mode_categories']
+    kinds = {mode: 'exchange' if category == 'cx' else 'wait' if category == 'wait' else 'range'
+             for mode, category in categories.items()}
+    return plugin, sites, categories, kinds
+
+
 DRIVER_PAIRS = {9: ("frame", "frame"), 11: ("driver.input_wait", "wait"), 13: ("embedding", "unknown"),
                 15: ("layer", "unknown"), 17: ("driver.slot_wait", "wait"), 19: ("push", "cx"), 21: ("head", "unknown")}
 
@@ -160,8 +166,9 @@ def _meta(metadata):
     return m, text, name
 
 
-def pool_segments(events, where="pool"):
+def pool_segments(events, where="pool", model=None):
     """Attribute each adjacent pair to the post-event mode and next stage end."""
+    _plugin, sites, _categories, _kinds = _model_tables(model)
     segments, pending = [], []
     active, call, mode, sub, wait = False, None, "idle", None, None
     for i, (_tick, kind, code, aux) in enumerate(events):
@@ -196,9 +203,9 @@ def pool_segments(events, where="pool"):
         elif kind == 23:
             if wait is not None:
                 raise ValueError(where + ": SUB_B crosses an open wait")
-            mode = sub = SITES.get(code, "site.%d" % code)
+            mode = sub = sites.get(code, "site.%d" % code)
         elif kind == 24:
-            if sub is None or wait is not None or sub != SITES.get(code, "site.%d" % code):
+            if sub is None or wait is not None or sub != sites.get(code, "site.%d" % code):
                 raise ValueError(where + ": SUB_E without matching step")
             mode, sub = "busy", None
         else:
@@ -235,14 +242,18 @@ def driver_intervals(events, where="driver"):
     return result
 
 
-def load_gftrace2(path, metadata=None, mapping=None, windows=True, run_id=None):
-    """Import GFTRACE2 directly into a resource v2 session, using no plugins."""
+def load_gftrace2(path, metadata=None, mapping=None, windows=True, run_id=None, model=None):
+    """Decode the wire protocol and apply only the selected plugin's semantics."""
+    plugin, _sites, mode_categories, mode_kinds = _model_tables(model)
     path = Path(path)
     if metadata is None and path.with_suffix(".txt").is_file():
         metadata = path.with_suffix(".txt")
     raw = path.read_bytes()
     frequency, buffers = _read_gftrace2(raw)
     meta, meta_text, meta_name = _meta(metadata)
+    if 'GFTRACE2' not in plugin['trace']['format']:
+        raise ValueError('selected model plugin does not support GFTRACE2')
+    meta['stages'] = dict(plugin['trace'].get('stages', {}), **{str(k): v for k, v in meta['stages'].items()})
     if meta.get("native_clock_id", "CNTVCT_EL0") != "CNTVCT_EL0":
         raise ValueError("GFTRACE2 timestamps are CNTVCT_EL0; metadata cannot rename the native clock")
     declared_freq = meta.get("frequency_hz", meta.get("freq"))
@@ -372,12 +383,12 @@ def load_gftrace2(path, metadata=None, mapping=None, windows=True, run_id=None):
                 else:
                     driver_stack.pop()
             continue
-        for i0, i1, mode, stage in mode_runs(pool_segments(events, thread_id)):
+        for i0, i1, mode, stage in mode_runs(pool_segments(events, thread_id, model=plugin)):
             a, z = ns(events[i0][0]), ns(events[i1][0])
             label = "idle" if stage is None else stage_name(stage) + "|" + mode
             if mode != "idle" and z > a:
                 records.append(dict(record_id=thread_id + ":s%d" % i0, resource_id=thread_id, source_id="gf.sw",
-                                    category=MODE_CATEGORY.get(mode, "unknown"), kind=MODE_KIND.get(mode, "range"),
+                                    category=mode_categories.get(mode, "unknown"), kind=mode_kinds.get(mode, "range"),
                                     layer="software", representation="interval", begin_ns=a, end_ns=z, name=label,
                                     uncertainty_ns=resolution, args=dict(mode=mode, stage=stage_name(stage)), **boundary(b, i0, i1)))
             add_counts(b, thread_id, die_id, i0, i1, label)
@@ -412,6 +423,9 @@ def load_gftrace2(path, metadata=None, mapping=None, windows=True, run_id=None):
                                     codes=codes if have_counts else [], pmu_state=state,
                                     windows_emitted=bool(windows), buffer_count=len(buffers), event_count=sum(len(b["ev"]) for b in buffers),
                                     raw_binary_path=raw_name, raw_encoding="base64", cumulative_readings_preserved=True)], raw_files=raw_files)
+    raw_files['raw/gftrace2/model-plugin.json'] = json.dumps(plugin, ensure_ascii=False, sort_keys=True)
+    session['provenance'][0]['model_plugin'] = plugin['profile_id']
+    session['provenance'][0]['model_plugin_sha256'] = hashlib.sha256(raw_files['raw/gftrace2/model-plugin.json'].encode('utf-8')).hexdigest()
     for key in ("host_id", "boot_id", "counter_domain_id"):
         if meta.get(key):
             session[key] = meta[key]
