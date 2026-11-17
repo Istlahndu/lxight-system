@@ -29,3 +29,12 @@ All server project operations, build files, temporary files and outputs stay
 within the configured project workspace (under lkn_workspace on shared servers).
 V1 deployment is retained separately.
 The previous D0 contract is preserved at docs/legacy-v1-contract.txt.
+
+GFTRACE2 imports retain exact cumulative PMU input bytes, integer CNTVCT ticks,
+software mode intervals, counter read windows and per-die aggregates. Same-host,
+same-boot CNTVCT inputs may merge with matching frequency and counter domain;
+PMU inputs must also share their original run_id. Grouping cannot calibrate
+CNTVCT to CLOCK_MONOTONIC or align separate counting runs. ticks-only zero arrays
+are not hardware counter measurements. Counter windows never imply hardware busy
+boundaries. Cross-run ratio transfer and model-derived category splits are not
+implemented by this native import path.

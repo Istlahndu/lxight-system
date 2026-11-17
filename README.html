@@ -128,7 +128,11 @@ python3 -m lxtrace record --profile proc-sample \
 </tr>
 <tr>
 <td>统一报告</td>
-<td><code>record</code> 默认生成自包含 HTML；<code>report</code> 从单会话、同目录会话或多个输入生成统一报告，支持同节点同轮软件多进程时间线</td>
+<td><code>record</code> 默认生成自包含 HTML；<code>report</code> 从单会话、同目录会话或多个输入生成统一报告，支持同节点软件多进程及同轮 CNTVCT 软件/PMU 时间线</td>
+</tr>
+<tr>
+<td>GFTRACE 导入</td>
+<td>原生识别 GFTRACE1 / GFTRACE2，保留软件子步骤、计数帧元数据、CNTVCT 原始时间及 GFTRACE2 累计 PMU 读数</td>
 </tr>
 <tr>
 <td>调度数据导入</td>
@@ -152,7 +156,8 @@ python3 -m lxtrace record --profile proc-sample \
 </tr>
 </tbody>
 </table></div>
-<p>GFTRACE1 软件事件导入支持连续子步骤切换：已知 SUB 站点的下一次开始可作为上一子步骤的结束边界，并保留边界依据。站点 1/2 为交换，4/6 为矩阵，3/5/7/8/9 为向量/标量；显式类别元数据仍优先，未知站点保持 unknown。帧元数据中的 <code>counting</code>、<code>parts</code>、<code>tokens</code> 会保留；缺少 <code>counting</code> 时不推断是否为计数帧。当前内置导入器不支持 GFTRACE2 的二进制及 PMU 数组。</p>
+<p>GFTRACE1 软件事件导入支持连续子步骤切换：已知 SUB 站点的下一次开始可作为上一子步骤的结束边界，并保留边界依据。站点 1/2 为交换，4/6 为矩阵，3/5/7/8/9 为向量/标量；显式类别元数据仍优先，未知站点保持 unknown。帧元数据中的 <code>counting</code>、<code>parts</code>、<code>tokens</code> 会保留；缺少 <code>counting</code> 时不推断是否为计数帧。</p>
+<p>GFTRACE2 导入直接生成原生 v2 会话。产品保留完整二进制证据及累计 PMU 读数，另生成读数差分窗口和按 die、相位、模式、事件码的合计。软件相位归属遵循同调用内下一次结束相位的屏障；等待结束后恢复当前子步骤。驱动线程的 PMU 按相邻读数排他归属，避免嵌套帧与层范围重复统计。<code>pmu ticks</code> 的零数组保留为时钟运行的原始证据，不解释成实测硬件事件全部为零。</p>
 <h3 id="22">2.2 业务类别与解释</h3>
 <p>以下软件范围需由应用或引擎显式标记。范围的起止表示调用经过时间，其间可能包含调度换出与硬件停顿。</p>
 <div class="table-wrap"><table>
@@ -327,12 +332,32 @@ python3 -m lxtrace report /path/to/rank0.lxtrace /path/to/rank1.lxtrace \
   --output &quot;$run_dir/ranks.html&quot; --session-output &quot;$run_dir/ranks.lxtrace&quot;
 </code></pre>
 <p>软件多进程汇集要求输入具有可比较的同主机、同 boot <code>CLOCK_MONOTONIC</code> 时钟身份与明确的运行归属。存在不同 <code>run_id</code> 时，工具会要求使用 <code>--run-id explicit-group</code> 显式声明分组；旧会话缺少运行身份时也必须提供该参数。分组声明不会校正时钟，未经校时的多节点输入仍会拒绝处理。报告不通过帧号或屏障对齐，也不会把不同配置、不同运行的数据默认视为同次执行。</p>
+<p>CNTVCT 输入也可汇集，要求同一已知 <code>host_id</code>、<code>boot_id</code>、计数器域和频率。时间由原始整数 tick 重算到共同原点，保留 <code>native_clock_id=CNTVCT_EL0</code>；含 PMU 的输入还必须具有相同 <code>run_id</code>。<code>--run-id</code> 不能将分别执行的计数运行伪装成同次采集，也不能校准 CNTVCT 与 <code>CLOCK_MONOTONIC</code>。tT、tA、tB、tV 应分别保存与查看；本版本尚未提供跨运行计数比率搬运或模型推算分解。</p>
 <pre><code class="language-sh"># 仅在已核对输入确属同一可比较采集组后显式声明；旧会话必须声明。
 python3 -m lxtrace report /path/to/old-rank0.lxtrace /path/to/old-rank1.lxtrace \
   --output &quot;$run_dir/group.html&quot; --session-output &quot;$run_dir/group.lxtrace&quot; \
   --run-id explicit-group
 </code></pre>
-<h3 id="63">6.3 命令行分析与文件交换</h3>
+<h3 id="63-gftrace1-gftrace2">6.3 导入 GFTRACE1 / GFTRACE2</h3>
+<p>引擎已输出 <code>trace-&lt;run&gt;.bin</code> 与同名 <code>.txt</code> 元数据时，可直接执行：</p>
+<pre><code class="language-sh">python3 -m lxtrace import --type gftrace \
+  --input /path/to/trace-tA.bin --output &quot;$run_dir/imported.lxtrace&quot;
+python3 -m lxtrace export &quot;$run_dir/imported.lxtrace&quot; \
+  --format html --output &quot;$run_dir/imported.html&quot;
+
+# 只生成报告，无需预先运行外部转换脚本。
+python3 -m lxtrace report /path/to/trace-tT.bin \
+  --output &quot;$run_dir/timeline.html&quot;
+</code></pre>
+<p>导入器按文件头自动识别版本，默认读取同名 <code>.txt</code>；可用 <code>--metadata PATH</code> 指定元数据。GFTRACE2 的 <code>--no-windows</code> 省略派生的逐窗 PMU 记录，仍保留原始累计读数、软件区间及计数合计，适合较大的数据文件。原始二进制在会话归档中以带编码声明的 base64 文本保存，并记录解码后的 SHA-256；计数窗口可追溯至 buffer、事件索引、字节偏移和累计端点。未知事件码列保留未知，不推断硬件含义。</p>
+<p>同轮多文件汇集时，GFTRACE 元数据需声明 <code>host_id</code>、<code>boot_id</code>、<code>run_id</code>，可另声明 <code>counter_domain_id</code>。例如这些身份来自采集端实际记录，不能只为绕过检查而填写相同值：</p>
+<pre><code class="language-text">host_id COMPUTE_NODE
+boot_id RECORDED_BOOT_ID
+run_id INFERENCE_RUN_ID
+counter_domain_id CNTVCT_EL0
+</code></pre>
+<p>计数窗口表示两次读数之间的累计差，不代表矩阵、访存或通信硬件活动的起止。计数运行包含读取计数器的开销；性能时间应取独立的只读时钟运行。导入已有 GFTRACE2 文件不需要 root，但产生特定硬件 PMU 事件的数据仍取决于计算节点权限。</p>
+<h3 id="64">6.4 命令行分析与文件交换</h3>
 <pre><code class="language-sh"># 指定选区；时间单位支持 ns、us、ms、s，不写单位按纳秒处理。
 python3 -m lxtrace analyze &quot;$run_dir/session.lxtrace&quot; \
   --from 1s --to 2s --output &quot;$run_dir/selection.json&quot;

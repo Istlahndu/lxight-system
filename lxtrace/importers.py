@@ -1,4 +1,4 @@
-"""Loss-aware SDK JSONL and GFTRACE1 importers. No third-party packages.
+"""Loss-aware SDK JSONL and GFTRACE importers. No third-party packages.
 
 GFTRACE1 support is exactly the little-endian layout in gf_trace.h (2026-11-14
 local source). Its slot coordinates remain logical labels without an explicit,
@@ -263,6 +263,8 @@ def _metadata(path):
             frames[frame_id] = frame
         elif len(words) == 2 and words[0] == "data_origin":
             properties["original_data_origin"] = words[1]
+        elif len(words) == 2 and words[0] in ("host_id", "boot_id", "run_id", "counter_domain_id"):
+            properties[words[0]] = words[1]
     properties["categories"] = categories
     properties["frames"] = frames
     return properties, stages, layers
@@ -287,9 +289,13 @@ def _gf_frame_metadata(meta):
     return frames
 
 
-def load_gftrace(path, metadata=None, mapping=None):
+def load_gftrace(path, metadata=None, mapping=None, windows=True, run_id=None):
+    """Keep GFTRACE1's v1 API; GFTRACE2 imports directly to the native v2 schema."""
     path = Path(path)
     raw = path.read_bytes()
+    if raw[:8] == b"GFTRACE2":
+        from .gftrace import load_gftrace2
+        return load_gftrace2(path, metadata, mapping, windows=windows, run_id=run_id)
     if len(raw) < 24:
         raise ValueError("truncated GFTRACE1 header")
     magic, frequency, count, reserved = struct.unpack_from("<8sQii", raw)
@@ -327,8 +333,16 @@ def load_gftrace(path, metadata=None, mapping=None):
     origin_ns = minimum * 1000000000 // frequency
     session = _base(path, origin_ns, "GFTRACE_GENERIC_TIMER" if frequency != 1000000000 else "GFTRACE_SOURCE_CLOCK_UNVERIFIED", "imported")
     session["clock"].update({"original_unit": "ticks", "frequency_hz": frequency,
+                              "native_clock_id": "CNTVCT_EL0",
                               "origin_ticks": minimum, "conversion": "(ticks-origin_ticks)*1e9//frequency",
                               "resolution_ns": max(1, (1000000000 + frequency - 1) // frequency)})
+    for key in ("host_id", "boot_id", "run_id"):
+        if meta.get(key):
+            session[key] = meta[key]
+    if run_id is not None:
+        session["run_id"] = run_id
+    if meta.get("counter_domain_id"):
+        session["clock"]["counter_domain_id"] = meta["counter_domain_id"]
     session["app"] = {"name": "GFTRACE1 imported logical timeline", "build_id": "unknown", "workload_config": {}}
     if meta.get("original_data_origin"):
         session["original_data_origin"] = meta["original_data_origin"]

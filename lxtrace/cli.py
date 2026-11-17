@@ -105,15 +105,16 @@ def make_parser():
     q.add_argument('--thread', action='append', default=[]); q.add_argument('--frame', action='append', default=[])
     q.add_argument('--operator', action='append', default=[]); q.add_argument('--cpu', type=int)
     q.add_argument('--format', choices=['json','csv'], default='json'); q.add_argument('--output', required=True)
-    q = c.add_parser('import', help='import v1 SDK/GFTRACE as software, or verify native session')
+    q = c.add_parser('import', help='import SDK, GFTRACE1 software, GFTRACE2 events/PMU, or a native session')
     q.add_argument('--type', choices=['sdk','gftrace','v1','session','schedule'], required=True)
     q.add_argument('--input', required=True); q.add_argument('--metadata'); q.add_argument('--mapping')
     q.add_argument('--output', required=True)
+    q.add_argument('--no-windows', action='store_true', help='GFTRACE2: omit derived PMU windows; keep cumulative readings and aggregates')
     q = c.add_parser('export'); q.add_argument('session')
     q.add_argument('--format', choices=['html','chrome-trace','json','csv'], required=True)
     q.add_argument('--output', required=True)
     q = c.add_parser('report', help='generate one unified pipeline HTML from a session or same-node rank sessions')
-    q.add_argument('inputs', nargs='+', help='v1/v2 sessions, SDK JSONL, or a directory containing rank sessions')
+    q.add_argument('inputs', nargs='+', help='v1/v2 sessions, SDK JSONL, GFTRACE1/2 binary, or a directory containing sessions')
     q.add_argument('--output', required=True, help='self-contained HTML report')
     q.add_argument('--session-output', help='also save the merged native .lxtrace archive or JSON')
     q.add_argument('--run-id', help='explicit run grouping for older sessions without a shared run ID')
@@ -190,14 +191,16 @@ def main(argv=None):
             if args.format == 'csv': export_csv(result, args.output)
             else: write_json(result, args.output)
         elif args.command == 'import':
+            if args.no_windows and args.type != 'gftrace':
+                raise ValueError('--no-windows is a GFTRACE2 import option')
             if args.type == 'schedule':
                 if not args.metadata: raise ValueError('schedule import requires --metadata with topology, clock, scope and stable instance IDs')
                 from .schedule import import_schedule
                 s = import_schedule(args.input,args.metadata)
             elif args.type in ('sdk','gftrace'):
                 from .importers import load_sdk, load_gftrace
-                old = load_sdk(args.input) if args.type == 'sdk' else load_gftrace(args.input,args.metadata,args.mapping)
-                s = R.migrate_v1(old)
+                imported = load_sdk(args.input) if args.type == 'sdk' else load_gftrace(args.input,args.metadata,args.mapping,windows=not args.no_windows)
+                s = R.validate_session(imported) if imported.get('schema_version') == R.SCHEMA else R.migrate_v1(imported)
             else: s = R.load_session(args.input)
             R.write_session(s, args.output)
         elif args.command in ('export','view'):

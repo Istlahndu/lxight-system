@@ -1,17 +1,18 @@
 """Build the standard report, including audited same-run software merging.
 
-Only software sessions may be combined. A shared host, boot and OS monotonic
-clock are required; an explicit run_id is a grouping declaration, never clock
-calibration. A single session of any supported evidence type can be reported.
+Software CLOCK_MONOTONIC sessions and same-run CNTVCT trace/counter sessions
+may be combined within one declared host and boot. Grouping never calibrates
+different clocks or aligns separate PMU measurement runs.
 """
 import copy
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 
 from . import resource
-from .importers import load_sdk
+from .importers import load_sdk, load_gftrace
 
 
 def _json(text):
@@ -45,6 +46,9 @@ def _content(value):
 def _kind(path):
     if path.is_dir():
         return 0 if (path / "manifest.json").is_file() else None
+    if path.is_file() and path.suffix.lower() == ".bin":
+        with path.open("rb") as stream:
+            return {b"GFTRACE1": 4, b"GFTRACE2": 5}.get(stream.read(8))
     if not path.is_file() or path.suffix.lower() not in (".json", ".jsonl", ".lxtrace"):
         return None
     try:
@@ -87,6 +91,8 @@ def _digests(value):
     """Collect declared evidence hashes, including those inside old migrations."""
     found = set()
     if isinstance(value, dict):
+        if value.get("kind") == "metadata":
+            return found  # Shared dictionaries are not repeated observations.
         for key, child in value.items():
             if key in ("sha256", "evidence_sha256") and isinstance(child, str) and len(child) == 64:
                 found.add(child)
@@ -108,7 +114,14 @@ def _load(path, kind):
         exact = (path / "manifest.json").read_bytes()
     else:
         exact = path.read_bytes()
-        if kind == 3:
+        if kind in (4, 5):
+            imported = load_gftrace(path)
+            if imported.get("schema_version") == resource.SCHEMA:
+                session = imported
+            else:
+                legacy = imported
+                session = resource.migrate_v1(legacy)
+        elif kind == 3:
             meta = next((_json(line) for line in exact.decode("utf-8-sig").splitlines()
                          if line.strip() and _json(line).get("type") == "meta"), None)
             if not meta:
@@ -134,8 +147,8 @@ def _load(path, kind):
                 if candidate.get("schema_version") == "lxtrace.session.v1":
                     legacy = candidate
                     break
-    input_name = "manifest.json" if kind == 0 else ("sdk.jsonl" if kind == 3 else "session.json")
-    raw["raw/input/" + input_name] = exact.decode("utf-8")
+    input_name = "manifest.json" if kind == 0 else ("sdk.jsonl" if kind == 3 else "trace.bin.base64" if kind in (4, 5) else "session.json")
+    raw["raw/input/" + input_name] = base64.b64encode(exact).decode("ascii") if kind in (4, 5) else exact.decode("utf-8")
     for key in ("host_id", "boot_id", "run_id", "job_id"):
         value = (legacy or {}).get(key)
         if key in ("host_id", "boot_id") and session.get(key) and value and session[key] != value:
@@ -152,27 +165,76 @@ def _load(path, kind):
                 evidence=evidence, raw_hashes={name: _sha(text.encode("utf-8")) for name, text in raw.items()})
 
 
+def _native_clock(clock, original):
+    return clock.get("native_clock_id", original.get("native_clock_id", original.get("clock_id", original.get("id"))))
+
+
+def _counter_clock(clock, original):
+    frequency = clock.get("frequency_hz", original.get("frequency_hz"))
+    ticks = clock.get("origin_ticks", original.get("origin_ticks"))
+    if (not isinstance(frequency, int) or isinstance(frequency, bool) or frequency <= 0
+            or not isinstance(ticks, int) or isinstance(ticks, bool) or ticks < 0):
+        raise ValueError("CNTVCT clock requires integer frequency_hz and origin_ticks")
+    domain = clock.get("counter_domain_id", original.get("counter_domain_id", "CNTVCT_EL0"))
+    if not isinstance(domain, str) or not domain:
+        raise ValueError("CNTVCT clock requires a known counter domain")
+    return frequency, ticks, domain
+
+
 def _clock(item):
     session, legacy = item["session"], item["legacy"]
     descriptors = []
     for clock in session["clocks"]:
         original = clock.get("original_clock", clock)
-        native = clock.get("native_clock_id", original.get("native_clock_id", original.get("clock_id", original.get("id"))))
-        if native != "CLOCK_MONOTONIC":
-            raise ValueError("multi-input report requires known CLOCK_MONOTONIC clocks")
-        origin = clock.get("origin_ns", original.get("origin_ns"))
+        native = _native_clock(clock, original)
+        if native == "CNTVCT_EL0":
+            frequency, ticks, _ = _counter_clock(clock, original)
+            origin = ticks * 1000000000 // frequency
+        elif native == "CLOCK_MONOTONIC":
+            origin = clock.get("origin_ns", original.get("origin_ns"))
+        else:
+            raise ValueError("multi-input report requires known CLOCK_MONOTONIC or CNTVCT_EL0 clocks")
         if not isinstance(origin, int) or isinstance(origin, bool) or origin < 0:
             raise ValueError("multi-input report requires an absolute monotonic origin_ns")
         transform = clock.get("transform")
-        if transform and (transform.get("scale", 1) != 1 or transform.get("offset_ns", -origin) != -origin):
+        if transform and (native == "CNTVCT_EL0" or transform.get("scale", 1) != 1 or transform.get("offset_ns", -origin) != -origin):
             raise ValueError("unsupported cross-source time transform")
         descriptors.append((clock, original, origin))
     if not descriptors and legacy:
         original = legacy.get("clock", {})
         descriptors = [(dict(clock_id="legacy", original_clock=original), original, original.get("origin_ns"))]
-    if not descriptors or len({value[2] for value in descriptors}) != 1:
+    if not descriptors or len({(value[2], _native_clock(value[0], value[1])) for value in descriptors}) != 1:
         raise ValueError("sources must share one normalized monotonic origin per session")
     return descriptors[0][2], descriptors
+
+
+def _retime_cntvct(value, input_ticks, common_ticks, frequency, raw_tick=None):
+    """Recompute against a shared tick origin, avoiding independently rounded ns."""
+    if raw_tick is not None:
+        if isinstance(raw_tick, str) and raw_tick.isdecimal():
+            raw_tick = int(raw_tick)
+        if not isinstance(raw_tick, int) or isinstance(raw_tick, bool) or raw_tick < input_ticks:
+            raise ValueError("invalid raw CNTVCT timestamp")
+        if (raw_tick - input_ticks) * 1000000000 // frequency != value:
+            raise ValueError("raw CNTVCT timestamp disagrees with normalized nanoseconds")
+    else:
+        if frequency > 1000000000:
+            raise ValueError("CNTVCT above 1 GHz requires raw ticks for exact merging")
+        delta = (value * frequency + 999999999) // 1000000000
+        if delta * 1000000000 // frequency != value:
+            raise ValueError("CNTVCT timestamp cannot be reconstructed from integer ticks")
+        raw_tick = input_ticks + delta
+    return (raw_tick - common_ticks) * 1000000000 // frequency
+
+
+def _record_tick(record, field):
+    keys = {"begin_ns": ("raw_begin_ticks",), "end_ns": ("raw_end_ticks",),
+            "timestamp_ns": ("raw_timestamp_ticks", "raw_ticks", "raw_begin_ticks")}[field]
+    for container in (record, record.get("args", {})):
+        for key in keys:
+            if container.get(key) is not None:
+                return container[key]
+    return None
 
 
 def _record_keys(item):
@@ -183,6 +245,8 @@ def _record_keys(item):
         origin = 0
     result = set()
     for r in item["session"]["records"]:
+        if r["representation"] == "aggregate":
+            continue  # A label without observed boundaries is not a capture ID.
         begin = r.get("timestamp_ns", r.get("begin_ns"))
         end = r.get("end_ns")
         result.add((r["record_id"], r.get("thread_instance_id"),
@@ -217,6 +281,19 @@ def _inputs(paths):
 
 def _namespace(value, prefix):
     return prefix + str(value) if value is not None else None
+
+
+def _raw_reference(reference, prefix):
+    if isinstance(reference, dict):
+        value = copy.deepcopy(reference)
+        if not isinstance(value.get("path"), str):
+            raise ValueError("structured raw reference requires a path")
+        value["path"] = _raw_reference(value["path"], prefix)
+        return value
+    if not isinstance(reference, str):
+        raise ValueError("raw reference must be a path or structured path object")
+    path, marker, fragment = reference.partition("#")
+    return prefix + _raw_name(path)[4:] + (marker + fragment if marker else "")
 
 
 def _references(value, prefix, resources, sources, clocks):
@@ -266,24 +343,43 @@ def merge_sessions(paths, run_id=None):
             result["run_id"] = run_id
         return resource.validate_session(result)
     sessions = [item["session"] for item in items]
-    if any(r["layer"] != "software" for s in sessions for r in s["records"]) or any(
-            source.get("source_layer", source.get("layer")) != "software" for s in sessions for source in s["sources"]):
+    software_only = not (any(r["layer"] != "software" for s in sessions for r in s["records"]) or any(
+            source.get("source_layer", source.get("layer")) != "software" for s in sessions for source in s["sources"]))
+    cntvct_only = all(s["clocks"] and all(_native_clock(c, c.get("original_clock", c)) == "CNTVCT_EL0"
+                                         for c in s["clocks"]) for s in sessions)
+    counter_only_hardware = all(r["layer"] == "software" or (
+        r["layer"] == "hardware" and r["representation"] in ("counter_window", "sample", "aggregate"))
+        for s in sessions for r in s["records"]) and all(
+        source.get("source_layer", source.get("layer")) in ("software", "hardware") for s in sessions for source in s["sources"])
+    if not software_only and not (cntvct_only and counter_only_hardware):
         raise ValueError("multi-input reports currently support software sources only; separate proc/PMU runs cannot be merged")
     for key in ("host_id", "boot_id"):
         if any(not s.get(key) for s in sessions) or len({s[key] for s in sessions}) != 1:
             raise ValueError("multi-input report requires the same known " + key)
     original_runs = [s.get("run_id") for s in sessions]
+    if not software_only and (any(not value for value in original_runs) or len(set(original_runs)) != 1):
+        raise ValueError("CNTVCT PMU inputs must have the same run_id; grouping cannot align separate counting runs")
     if run_id is None and (any(not value for value in original_runs) or len(set(original_runs)) != 1):
         raise ValueError("different run_id values require an explicit run_id grouping declaration")
     group = run_id or original_runs[0]
     clocks = [_clock(item) for item in items]
+    natives = {_native_clock(c, original) for _, descriptors in clocks for c, original, _ in descriptors}
+    if len(natives) != 1:
+        raise ValueError("CLOCK_MONOTONIC and CNTVCT_EL0 require explicit clock calibration; run grouping is insufficient")
+    native = next(iter(natives))
+    tick_origin, frequency = None, None
+    if native == "CNTVCT_EL0":
+        counters = [_counter_clock(c, original) for _, descriptors in clocks for c, original, _ in descriptors]
+        if len({(value[0], value[2]) for value in counters}) != 1:
+            raise ValueError("CNTVCT inputs must share frequency_hz and counter domain")
+        frequency, tick_origin = counters[0][0], min(value[1] for value in counters)
     origin = min(value[0] for value in clocks)
     identity = _sha(_dump(dict(inputs=[i["sha256"] for i in items], run_id=group)).encode("utf-8"))[:24]
     result = dict(schema_version=resource.SCHEMA, session_id="unified-" + identity, run_id=group,
-                  data_origin="imported", name="Unified software timeline", host_id=sessions[0]["host_id"],
+                  data_origin="imported", name="Unified CNTVCT timeline" if cntvct_only else "Unified software timeline", host_id=sessions[0]["host_id"],
                   boot_id=sessions[0]["boot_id"], resources=[], sources=[], clocks=[], records=[],
                   allocation=dict(status="unverified", cpu_ids=[]), raw_files={}, capability_manifest=[],
-                  provenance=[], app=dict(name="Unified software report"),
+                  provenance=[], app=dict(name="Unified CNTVCT report" if cntvct_only else "Unified software report"),
                   quality=dict(per_input={}, per_source={}, unknown_windows=[], warnings=[],
                                dropped_records=0, protocol_errors=0, incomplete_events=0,
                                clean_shutdown=True, source_continuity="unknown", clock_uncertainty_ns=None))
@@ -293,16 +389,23 @@ def merge_sessions(paths, run_id=None):
     for index, (item, (source_origin, descriptors)) in enumerate(zip(items, clocks)):
         s, prefix = item["session"], "input%d:" % index
         shift = source_origin - origin
+        input_ticks = _counter_clock(descriptors[0][0], descriptors[0][1])[1] if cntvct_only else None
+        def retime(value, raw_tick=None):
+            return _retime_cntvct(value, input_ticks, tick_origin, frequency, raw_tick) if cntvct_only else value + shift
         rid = {r["resource_id"]: prefix + r["resource_id"] for r in s["resources"]}
         sid = {r["source_id"]: prefix + r["source_id"] for r in s["sources"]}
         cid = {c.get("clock_id", c.get("id")): prefix + c.get("clock_id", c.get("id")) for c, _, _ in descriptors}
         for old_clock, original_clock, _ in descriptors:
             clock = copy.deepcopy(old_clock)
             old_id = old_clock.get("clock_id", old_clock.get("id"))
-            clock.update(clock_id=cid[old_id], native_clock_id="CLOCK_MONOTONIC", origin_ns=origin,
+            clock.update(clock_id=cid[old_id], native_clock_id=native, origin_ns=origin,
                          original_clock=copy.deepcopy(original_clock), source_origin_ns=source_origin,
                          absolute_to_relative_offset_ns=-origin,
-                         relationship="same host and boot CLOCK_MONOTONIC; original error bounds retained")
+                         relationship="same host and boot " + native + "; original error bounds retained")
+            if cntvct_only:
+                clock.update(origin_ticks=tick_origin, source_origin_ticks=input_ticks, frequency_hz=frequency,
+                             counter_domain_id=_counter_clock(old_clock, original_clock)[2],
+                             conversion="(raw_ticks - origin_ticks) * 1e9 // frequency_hz")
             clock["error_ns"] = old_clock.get("error_ns", original_clock.get("calibration_error_ns"))
             clock.pop("transform", None)
             result["clocks"].append(clock)
@@ -322,7 +425,7 @@ def merge_sessions(paths, run_id=None):
             source.update(source_id=sid[old["source_id"]], clock_id=cid[old["clock_id"]], original_source_id=old["source_id"])
             for field in ("last_reliable_ts", "begin_ns", "end_ns"):
                 if source.get(field) is not None:
-                    source[field] += shift
+                    source[field] = retime(source[field])
             result["sources"].append(source)
             result["quality"]["per_source"][source["source_id"]] = dict(quality=copy.deepcopy(s["quality"]), source=copy.deepcopy(old))
         raw_prefix = "raw/inputs/input%d/" % index
@@ -337,22 +440,26 @@ def merge_sessions(paths, run_id=None):
                 r["clock_id"] = cid[old["clock_id"]]
             for field in ("begin_ns", "end_ns", "timestamp_ns"):
                 if r.get(field) is not None:
-                    r[field] += shift
-            r["raw_refs"] = [raw_prefix + _raw_name(ref.split("#", 1)[0])[4:] + ("#" + ref.split("#", 1)[1] if "#" in ref else "") for ref in r.get("raw_refs", [])]
+                    r[field] = retime(r[field], _record_tick(old, field))
+            r["raw_refs"] = [_raw_reference(ref, raw_prefix) for ref in r.get("raw_refs", [])]
             r["original_identity"] = dict(session_id=s["session_id"], record_id=old["record_id"],
                                            resource_id=old["resource_id"], source_id=old["source_id"],
                                            clock_origin_ns=source_origin, time_shift_ns=shift)
+            if cntvct_only:
+                r["original_identity"].update(clock_origin_ticks=input_ticks,
+                                              time_transform="(raw_ticks-common_origin_ticks)*1e9//frequency_hz")
             result["records"].append(r)
         q = s["quality"]
         result["quality"]["per_input"][prefix[:-1]] = copy.deepcopy(q)
         for key in ("dropped_records", "protocol_errors", "incomplete_events"):
-            result["quality"][key] += q.get(key, 0)
+            value = q.get(key, 0)
+            result["quality"][key] = None if value is None or result["quality"][key] is None else result["quality"][key] + value
         result["quality"]["clean_shutdown"] &= q.get("clean_shutdown") is True
         result["quality"]["warnings"].extend(q.get("warnings", []))
         for old in q.get("unknown_windows", []):
             window = copy.deepcopy(old)
             for field in ("begin_ns", "end_ns"):
-                window[field] += shift
+                window[field] = retime(window[field])
             if window.get("source_id") in sid:
                 window["source_id"] = sid[window["source_id"]]
             if window.get("resource_id") in rid:
@@ -364,16 +471,32 @@ def merge_sessions(paths, run_id=None):
                                       path=str(item["path"]), input_sha256=item["sha256"],
                                       evidence_sha256=sorted(item["evidence"]), raw_file_sha256=item["raw_hashes"],
                                       origin_ns=source_origin, offset_ns=shift, provenance=copy.deepcopy(s["provenance"])))
-        bounds.extend([s["time_range"][0] + shift, s["time_range"][1] + shift])
+        if cntvct_only:
+            # Empty/sub-ns imported traces may use an artificial 1 ns envelope.
+            raw_bounds = s.get("raw_time_range_ticks", [])
+            first = raw_bounds[0] if len(raw_bounds) == 2 else input_ticks if s["time_range"][0] == 0 else None
+            actual = [retime(s["time_range"][0], first)]
+            try:
+                last_values = [c.get("last_ticks", original.get("last_ticks")) for c, original, _ in descriptors]
+                last = raw_bounds[1] if len(raw_bounds) == 2 else max(value for value in last_values if value is not None) if any(value is not None for value in last_values) else None
+                actual.append(retime(s["time_range"][1], last))
+            except ValueError:
+                if s["time_range"] != [0, 1]:
+                    raise
+                actual.append(actual[0] + 1)
+            bounds.extend(actual)
+        else:
+            bounds.extend([s["time_range"][0] + shift, s["time_range"][1] + shift])
     result["time_range"] = [min(bounds), max(bounds)]
     result["records"].sort(key=lambda r: (r.get("timestamp_ns", r.get("begin_ns", 0)), r["record_id"]))
-    result["provenance"] = [dict(kind="unified_software_report", run_id=group,
+    result["provenance"] = [dict(kind="unified_cntvct_report" if cntvct_only else "unified_software_report", run_id=group,
         grouping="explicit_user_run_id" if run_id is not None else "matching_run_id",
-        common_origin_ns=origin, formula="normalized_ns = input_relative_ns + input_origin_ns - common_origin_ns",
-        clock_relationship="same host and boot CLOCK_MONOTONIC identity; no error bound fabricated",
+        common_origin_ns=origin, formula="normalized_ns = (raw_ticks - common_origin_ticks) * 1e9 // frequency_hz" if cntvct_only else "normalized_ns = input_relative_ns + input_origin_ns - common_origin_ns",
+        common_origin_ticks=tick_origin, frequency_hz=frequency,
+        clock_relationship="same host and boot " + native + " identity; no error bound fabricated",
         inputs=provenance_inputs,
-        limitations=["Software intervals only; affinity is not continuous CPU residency.",
-                     "No hardware activity, cross-device calibration or cross-run proc/PMU merge."])]
+        limitations=["Software intervals and counter windows are not continuous CPU residency or hardware activity.",
+                     "No cross-device calibration or cross-run PMU ratio alignment."])]
     return resource.validate_session(result)
 
 

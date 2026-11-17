@@ -7,7 +7,8 @@
   "H2": {"status":"blocked","reasons":["verified_hardware_compute_activity_source_missing","verified_device_transfer_activity_source_missing","cross_source_calibration_and_reference_missing"]},
   "supported_real_boundaries": ["OS context-switch residency from explicitly imported supported switch stream; producer evidence required"],
   "windows_samples": ["own-launch user-task cycles/instructions windows when perf_event_open allowed","own-launch proc thread CPU samples retaining cumulative utime/stime tick fields; no tick-delta windows"],
-  "software_semantics": ["optional historical C/C++ SDK and GFTRACE import; remains software"],
+  "software_semantics": ["optional historical C/C++ SDK and GFTRACE1/2 import; marked scopes remain software"],
+  "gftrace2_import": ["native binary events and cumulative PMU readings with original bytes retained", "integer CNTVCT_EL0 conversion and same-host/boot/frequency/domain merge", "PMU merge requires the same original counting run; read windows are not hardware activity boundaries"],
   "unavailable_or_pending": ["live continuous scheduling","trusted attach","matrix/vector/memory/frontend hardware busy boundaries","true DMA/NIC transfer intervals","hardware compute-transfer overlap","mature inference engine semantic plugin","full domain and 608 CPU live scale","10^7 event performance acceptance"],
   "fixture_policy": "All built-in cases are synthetic and validate math/UI only.",
   "isolation": "Public-account server project operations, builds, temporary files and outputs remain under lkn_workspace. No system policy modifications."

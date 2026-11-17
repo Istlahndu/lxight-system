@@ -35,7 +35,7 @@ def main(argv=None):
     p.add_argument("--duration", type=timestamp)
     p.add_argument("--output", required=True)
     p.add_argument("program", nargs=argparse.REMAINDER)
-    p = commands.add_parser("import", help="SDK JSONL or frozen GFTRACE1 + metadata")
+    p = commands.add_parser("import", help="SDK JSONL / GFTRACE1 software, or native v2 GFTRACE2 events and PMU")
     p.add_argument("--type", choices=["sdk", "gftrace"], required=True)
     p.add_argument("--input", required=True)
     p.add_argument("--metadata")
@@ -113,7 +113,11 @@ def main(argv=None):
         elif args.command == "import":
             from .importers import load_sdk, load_gftrace
             s = load_sdk(args.input) if args.type == "sdk" else load_gftrace(args.input, args.metadata, args.mapping)
-            write_json(finalize_session(s), args.output)
+            if s.get("schema_version") == "lxtrace.resource-session.v2":
+                from .resource import write_session
+                write_session(s, args.output)
+            else:
+                write_json(finalize_session(s), args.output)
         elif args.command == "analyze":
             if args.cpu is not None:
                 raise ValueError("CPU-residency analysis unavailable in D0. CPU point values/affinity are not intervals.")
