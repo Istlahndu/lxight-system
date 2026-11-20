@@ -54,6 +54,32 @@ class CompactImportTests(unittest.TestCase):
         write_unified_report([self.path], output)
         self.assertTrue(output.is_file())
 
+    def test_pipeline_joins_only_contained_prefill_worker_intervals(self):
+        from lxtrace.pipeline import pipeline_data
+
+        def site(site_id, name, category, args):
+            return 2, 0, 1, json.dumps(dict(site_id=site_id, name=name, category=category,
+                                            args_json=json.dumps(args))).encode()
+
+        worker = (3, 2, 1, json.dumps(dict(thread_id=2, tid=19, name='die0.domain1.cpu38')).encode())
+        driver = (3, 3, 1, json.dumps(dict(thread_id=3, tid=20, name='die.0.driver')).encode())
+        driver_records = [(100, 2, 1, 5), (110, 3, 1, 5), (180, 3, 2, 5), (200, 2, 2, 5)]
+        worker_records = [(120, 4, 1, 5), (160, 4, 2, 5), (185, 4, 1, 5), (195, 4, 2, 5)]
+        chunks = [site(2, 'prefill.frame', 'frame', {'kind': 'frame', 'scope': 'die_driver'}),
+                  site(3, 'prefill.layer.15', 'unknown', {'layer': 15}),
+                  site(4, 'L15 gate_up', 'engine.stage', {'layer': 15, 'stage': 'gate_up'}), worker, driver]
+        chunks.extend((4, thread, len(records), b''.join(EVENT.pack(*r) for r in records))
+                      for thread, records in ((2, worker_records), (3, driver_records)))
+        data = pipeline_data(self.load(capture(chunks)))
+        frame = next(f for f in data['frames'] if f['observed'])
+        group, = frame['groups']
+        self.assertEqual((group['label'], group['source']), ('L15', 'die0.domain1.cpu38'))
+        stage, = group['records']
+        self.assertEqual(stage[1:4], ['moe', 10, 40])
+        unframed = next(f for f in data['frames'] if not f['observed'])
+        self.assertEqual((unframed['begin_ns'], unframed['end_ns']), (85, 95))
+        self.assertEqual(data['counts'], dict(intervals=4, frames=1))
+
     def test_crash_and_corruption_never_fabricate_end(self):
         prefix = capture([(4, 1, 1, EVENT.pack(100, 1, 1, 0))], footer=False)
         for data in (prefix, prefix + b'partial', prefix + b'\0'*64):

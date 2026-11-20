@@ -127,6 +127,25 @@ class ReportCliTests(unittest.TestCase):
         self.assert_two_rank_records(stored)
         self.assertEqual(stored["records"], payload["records"])
 
+    def test_pipeline_view_preserves_legacy_rank_timing_and_categories(self):
+        sources = [self.write_rank(rank) for rank in range(2)]
+        for stage, source in enumerate(sources):
+            session = json.loads(source.read_text(encoding="utf-8"))
+            session["events"][0]["args"].update(pp_stage=stage, tp_rank=0, microbatch=3)
+            source.write_text(json.dumps(session), encoding="utf-8")
+        output = self.out / "pipeline.html"
+        result = self.cli("report", *sources, "--output", output, "--view", "pipeline")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        page = output.read_text(encoding="utf-8")
+        payload = re.search(r'<script type="application/json" id="pipeline-data">(.*?)</script>', page, re.S)
+        data = json.loads(payload.group(1))
+        self.assertEqual([lane["label"] for lane in data["lanes"]], ["PP 0", "PP 1"])
+        self.assertEqual([(f["key"], f["begin_ns"]) for f in data["frames"]],
+                         [("microbatch:3", 0), ("microbatch:3", 40)])
+        self.assertEqual(data["counts"], {"intervals": 12, "frames": 2})
+        categories = {r[1] for f in data["frames"] for group in f["groups"] for r in group["records"]}
+        self.assertEqual(categories, {"mat", "vec", "transfer", "request", "wait"})
+
     def test_report_discovers_same_run_sessions_in_directory(self):
         inputs = self.out / "inputs"
         self.write_rank(0, inputs)

@@ -306,7 +306,8 @@ python3 -m lxtrace record --profile basic \
 <h2 id="6">6. 查看、分析与导出</h2>
 <h3 id="61">6.1 查看结果</h3>
 <p>直接用浏览器打开 <code>record</code> 默认生成的 <code>session.html</code>、<code>pmu.html</code>，或 <code>--html</code> 指定的文件。这些文件是自包含报告，可以复制到开发工作站离线查看，无需启动网页服务。</p>
-<p>报告图形由软件固定模板自动生成，<code>record</code>、<code>report</code> 和 <code>export --format html</code> 共用同一套实现，无需另写绘图脚本。<code>web/index.html</code> 定义报告页面与控件，<code>web/timeline.js</code> 负责流水线／类别轨道布局及配色，<code>web/viewer.js</code> 负责加载会话、绘制时间线和缩放、筛选、选区、搜索等交互。导出时将这些资源与会话数据内嵌到 HTML，单进程和同节点多 rank 使用一致的视图与解释规则。</p>
+<p>默认资源报告由内置模板自动生成。<code>record</code>、<code>report</code> 和 <code>export --format html</code> 都可生成此报告。<code>web/index.html</code> 定义页面与控件，<code>web/timeline.js</code> 负责轨道布局和配色，<code>web/viewer.js</code> 提供缩放、筛选、选区和搜索。导出时将资源与会话数据内嵌到 HTML。</p>
+<p>需要从流水线总览下钻到帧和操作时，使用 <code>--view pipeline</code>。该视图统一使用内置的 <code>web/pipeline.html</code>，采集完成后可自动生成，也可从已有数据重导。帧、层、算子和等待的展示依据采集记录，适用的证据范围随会话而定。</p>
 <ol>
 <li>先确认会话来源与证据类型。<code>LIVE</code> 表示本工具采集，<code>IMPORTED</code> 表示导入，<code>SYNTHETIC</code> 表示合成数据。</li>
 <li>选择资源或软件线程；使用时间输入框或拖动框选确定分析区间。</li>
@@ -337,6 +338,15 @@ python3 -m lxtrace report /path/to/same-run-sessions \
 python3 -m lxtrace report /path/to/rank0.lxtrace /path/to/rank1.lxtrace \
   --output &quot;$run_dir/ranks.html&quot; --session-output &quot;$run_dir/ranks.lxtrace&quot;
 </code></pre>
+<p>对于已有追踪，使用同一条命令生成流水线视图。输入可为原生 <code>.lxtrace</code> 会话、历史 v1 会话、Compact <code>.lxc</code> 文件，或符合下方时钟与运行约束的同轮输入。</p>
+<pre><code class="language-sh">python3 -m lxtrace report &quot;$run_dir/session.lxtrace&quot; \
+  --view pipeline --output &quot;$run_dir/pipeline.html&quot;
+</code></pre>
+<p>需要在采集结束后直接生成相同样式时，在原 <code>record</code> 命令的 <code>--</code> 分隔符前加 <code>--view pipeline</code>。</p>
+<pre><code class="language-sh">python3 -m lxtrace record --profile basic --view pipeline \
+  --output &quot;$run_dir/session.lxtrace&quot; --html &quot;$run_dir/pipeline.html&quot; -- ./my_inference
+</code></pre>
+<p>页面为自包含 HTML，由程序读取数据并填入模板。选中一帧或一个层块可查看记录到的操作区间。只有外层打点的会话只能展示外层边界。阶段时长是软件区间，含其边界内发生的等待。</p>
 <p>软件多进程汇集要求输入具有可比较的同主机、同 boot <code>CLOCK_MONOTONIC</code> 时钟身份与明确的运行归属。存在不同 <code>run_id</code> 时，工具会要求使用 <code>--run-id explicit-group</code> 显式声明分组；旧会话缺少运行身份时也必须提供该参数。分组声明不会校正时钟，未经校时的多节点输入仍会拒绝处理。报告不通过帧号或屏障对齐，也不会把不同配置、不同运行的数据默认视为同次执行。</p>
 <p>CNTVCT 输入也可汇集，要求同一已知 <code>host_id</code>、<code>boot_id</code>、计数器域和频率。时间由原始整数 tick 重算到共同原点，保留 <code>native_clock_id=CNTVCT_EL0</code>；含 PMU 的输入还必须具有相同 <code>run_id</code>。<code>--run-id</code> 不能将分别执行的计数运行伪装成同次采集，也不能校准 CNTVCT 与 <code>CLOCK_MONOTONIC</code>。<code>report</code> 保留此规则；分开执行的 tT、tA、tB、tV 使用独立的 <a href="docs/production-attribution.html"><code>production-report</code> 归因流程</a>，按工作块搬运计数比率并保留模型推算标识。</p>
 <pre><code class="language-sh"># 仅在已核对输入确属同一可比较采集组后显式声明；旧会话必须声明。

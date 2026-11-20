@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LXTrace · 流水线</title>
+  <style>
+    :root {
+      font: 15px/1.48 system-ui, sans-serif;
+      color: #142637;
+      background: #f1f5f8;
+      --line: #d6e2e9;
+      --muted: #455d6d;
+      --label: 96px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px 28px; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 30px; line-height: 1.18; }
+    h2 { font-size: 19px; }
+    a { color: #075b81; }
+    header { margin-bottom: 16px; }
+    header p, .sub { color: var(--muted); }
+    section { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    button, select { font: inherit; color: inherit; border: 1px solid #b8cbd7; border-radius: 6px; padding: 4px 9px; background: #fff; }
+    select { max-width: min(100%, 18rem); }
+    button { cursor: pointer; }
+    button:hover { background: #eef5fb; }
+    button[aria-pressed=true] { color: #fff; border-color: #0d5278; background: #0d5278; }
+    :is(button, select, a):focus-visible { outline: 2px solid #127bb1; outline-offset: 2px; }
+    .bar, .control, .legend { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .bar { justify-content: space-between; }
+    .control { font-size: 13px; }
+    .legend { margin: 8px 0; color: var(--muted); font-size: 12px; }
+    .dot { display: inline-block; width: 9px; height: 9px; margin-right: 4px; border-radius: 2px; }
+    .axis { display: flex; justify-content: space-between; margin-left: var(--label); padding-bottom: 4px; color: var(--muted); font: 11px/1.4 ui-monospace, monospace; }
+    .lane { display: grid; grid-template-columns: var(--label) minmax(0, 1fr); min-height: 24px; align-items: center; }
+    .lane strong { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .lane select { font-size: 11px; padding: 1px 3px; margin-right: 4px; justify-self: start; }
+    .plot { position: relative; height: 22px; overflow: hidden; border-radius: 3px; background: repeating-linear-gradient(90deg, #edf2f6 0 1px, transparent 1px 10%), #f8fafb; }
+    .timeline { position: relative; }
+    :is(.timeline, .timeline-scrollbar):focus-visible { outline: 2px solid #127bb1; outline-offset: 2px; }
+    .timeline :is(.axis, .plot) { cursor: grab; user-select: none; }
+    .timeline.panning :is(.axis, .plot, .segment) { cursor: grabbing; }
+    .timeline.selecting :is(.axis, .plot, .segment) { cursor: crosshair; }
+    .zoom-selection { position: absolute; z-index: 3; top: 0; bottom: 0; border-inline: 1px solid #127bb1; background: #127bb126; pointer-events: none; }
+    .timeline-scrollbar { margin: 5px 0 0 var(--label); overflow-x: scroll; overflow-y: hidden; }
+    .timeline-scrollbar > div { height: 1px; }
+    .segment { position: absolute; top: 1px; height: 20px; min-width: 1px; border: 0; border-radius: 2px; text-align: left; color: #10212e; padding: 0; overflow: hidden; white-space: nowrap; font: 11px/20px system-ui, sans-serif; }
+    .segment.has-label { padding: 0 3px; }
+    .segment:hover, .segment:focus-visible { filter: brightness(.85); z-index: 2; }
+    .segment:focus-visible { outline-offset: -2px; }
+    .segment[aria-pressed=true] { outline: 1px solid #173247; outline-offset: -1px; box-shadow: inset 0 0 0 2px white; z-index: 1; }
+    .c-frame { background: #dce8ee; }
+    .c-unframed { background: repeating-linear-gradient(135deg, #eef4f7 0 5px, #dce8ee 5px 7px); }
+    .c-layer { background: #a6c4da; }
+    .c-wait { background: #f1d89c; }
+    .c-transfer { background: #81d5c7; }
+    .c-cc { background: #9acfc7; }
+    .c-request { background: #b7dfdc; }
+    .c-mat, .c-dsa { background: #87c4ed; }
+    .c-vec, .c-kda { background: #94a9ee; }
+    .c-moe { background: #e1abdb; }
+    .c-ffn { background: #8cd2b0; }
+    .c-mhc { background: #c9d7e1; }
+    .c-other { background: #e0e9ef; }
+    .stage-items { margin-top: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    td, th { padding: 3px 7px; border-bottom: 1px solid #e8eff3; text-align: left; }
+    .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .stage-select { border: 0; padding: 1px 3px; text-align: left; font-size: 13px; overflow-wrap: anywhere; }
+    .scroll-table { max-height: 216px; overflow: auto; }
+    .scroll-table th { position: sticky; top: 0; background: #fff; }
+    .note { margin-top: 9px; color: var(--muted); font-size: 12px; }
+    .detail { min-height: 3.2em; margin-top: 6px; overflow-wrap: anywhere; }
+    .tip { position: fixed; z-index: 4; max-width: calc(100vw - 24px); background: #172b3b; color: #fff; font-size: 12px; padding: 5px 8px; border-radius: 5px; pointer-events: none; overflow-wrap: anywhere; }
+    footer { margin-top: 14px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    @media (max-width: 780px) {
+      :root { --label: 66px; }
+      body { padding: 16px 9px; }
+      section { padding: 10px 9px; }
+    }
+    @media (max-width: 600px) { .axis .minor { display: none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">流水线</h1>
+    <p>在同一时间轴上查看各轨道，点击区间展开阶段。</p>
+  </header>
+  <main>
+    <section aria-labelledby="overview">
+      <div class="bar">
+        <h2 id="overview">流水线 · 同一时间轴</h2>
+        <div class="control">
+          <label for="frame">参照帧</label><select id="frame"></select>
+          <button id="steady" type="button" aria-pressed="true">参照窗口</button>
+          <button id="follow" type="button" aria-pressed="false">追同一帧</button>
+          <button id="all" type="button" aria-pressed="false">全程</button>
+        </div>
+      </div>
+      <div class="legend" id="olegend"></div>
+      <div id="overviewPlot" class="timeline" role="group" tabindex="0" aria-label="流水线时间轴" aria-describedby="overviewGestures"></div>
+      <div id="overviewScrollbar" class="timeline-scrollbar" role="region" tabindex="0" aria-label="流水线横向滚动" aria-controls="overviewPlot"><div aria-hidden="true"></div></div>
+      <p class="note" id="overviewNote"></p>
+      <p class="note" id="overviewGestures">滚轮以指针为中心缩放，拖动或横滑平移，Shift + 拖动框选放大。聚焦时间轴后可用 + / − 和方向键。</p>
+    </section>
+    <section aria-labelledby="layerTitle">
+      <div class="bar">
+        <h2 id="layerTitle">阶段明细</h2>
+        <div class="control">
+          <label for="layer">范围</label><select id="layer"></select>
+          <button id="resetStage" type="button">显示完整范围</button>
+        </div>
+      </div>
+      <p class="sub" id="layerMeta"></p>
+      <div class="stage-items">
+        <div id="stagePlot" class="timeline" role="group" tabindex="0" aria-label="阶段时间轴" aria-describedby="overviewGestures"></div>
+        <div id="stageScrollbar" class="timeline-scrollbar" role="region" tabindex="0" aria-label="阶段横向滚动" aria-controls="stagePlot"><div aria-hidden="true"></div></div>
+        <p id="detail" class="note detail" aria-live="polite"></p>
+        <div class="scroll-table">
+          <table aria-label="已采集阶段耗时">
+            <thead><tr><th scope="col">阶段（点击定位）</th><th scope="col" class="num">累计 ms</th><th scope="col" class="num">片段</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="notices" class="note"></div>
+    </section>
+  </main>
+  <footer id="sourceLabel"></footer>
+  <div id="tip" class="tip" role="tooltip" hidden></div>
+  <script type="application/json" id="pipeline-data"><!--LXTRACE_PIPELINE_DATA--></script>
+  <script>
+    'use strict';
+
+    const byId = id => document.getElementById(id);
+    const data = JSON.parse(byId('pipeline-data').textContent);
+    const categories = new Map([
+      ['frame', '帧'], ['unframed', '未标注帧'], ['layer', '层 / 阶段'], ['mat', '矩阵计算'], ['vec', '向量 / 标量'],
+      ['dsa', 'DSA'], ['kda', 'KDA'], ['moe', 'MoE'], ['ffn', 'Dense FFN'], ['mhc', 'mHC / 边界'],
+      ['transfer', '交换调用'], ['cc', '计算内跨核'], ['request', '请求生命周期'], ['wait', '显式等待'], ['other', '其他'],
+    ]);
+    const aliases = new Map([['cx', 'transfer'], ['exchange', 'transfer']]);
+    const msFormats = [2, 5, 6].map(digits => new Intl.NumberFormat('en-US', {minimumFractionDigits: 2, maximumFractionDigits: digits}));
+    const fmt = (ns, resolution = ns) => {
+      const scale = Math.abs(resolution);
+      return msFormats[scale >= 1e6 ? 0 : scale >= 1e3 ? 1 : 2].format(ns / 1e6);
+    };
+    const phaseLabels = new Map(Object.entries(data.name_labels ?? {}));
+    const phaseName = index => phaseLabels.get(data.names[index]) ?? data.names[index];
+    const str = String;
+    const key = frame => str(frame.key);
+    const framesByLane = new Map();
+    const frameOptions = new Map();
+    const observedKeys = new Set();
+    const lanes = new Map(data.lanes.map(lane => [str(lane.id), lane]));
+    for (const frame of data.frames) {
+      const lane = str(frame.lane);
+      if (!framesByLane.has(lane)) framesByLane.set(lane, []);
+      framesByLane.get(lane).push(frame);
+      if (!frameOptions.has(key(frame))) frameOptions.set(key(frame), frame.label);
+      if (frame.observed !== false) observedKeys.add(key(frame));
+    }
+
+    function element(tag, label, cls) {
+      const node = document.createElement(tag);
+      if (label !== undefined) node.textContent = label;
+      if (cls) node.className = cls;
+      return node;
+    }
+
+    function category(value) {
+      if (categories.has(value)) return value;
+      return aliases.get(value) ?? 'other';
+    }
+
+    function setOptions(select, options, selected) {
+      select.replaceChildren(...options.map(([id, label]) => {
+        const option = element('option', label);
+        option.value = id;
+        return option;
+      }));
+      select.value = selected;
+    }
+
+    function drawLegend(root, keys) {
+      root.replaceChildren(...[...categories].filter(([id]) => keys.has(id)).map(([id, label]) => {
+        const item = element('span');
+        item.append(element('i', undefined, `dot c-${id}`), document.createTextNode(label));
+        return item;
+      }));
+    }
+
+    function axis(root, begin, end) {
+      const row = element('div', undefined, 'axis');
+      for (let i = 0; i <= 4; i++) {
+        const step = (end - begin) / 4;
+        const tick = `${fmt(begin + step * i, step)}${i === 4 ? ' ms' : ''}`;
+        row.append(element('span', tick, i % 2 ? 'minor' : ''));
+      }
+      root.append(row);
+    }
+
+    function plotLane(root, label) {
+      const row = element('div', undefined, 'lane');
+      const plot = element('div', undefined, 'plot');
+      const caption = typeof label === 'string' ? element('strong', label) : label;
+      if (typeof label === 'string') caption.title = label;
+      row.append(caption, plot);
+      root.append(row);
+      return plot;
+    }
+
+    function tooltip(event, label) {
+      if (event.buttons) return;
+      const tip = byId('tip');
+      tip.textContent = label;
+      tip.hidden = false;
+      tip.style.left = `${Math.min(event.clientX + 10, Math.max(0, innerWidth - tip.offsetWidth - 12))}px`;
+      tip.style.top = `${Math.max(3, event.clientY - tip.offsetHeight - 6)}px`;
+    }
+
+    function block(plot, item, lo, hi) {
+      if (item.end <= lo || item.start >= hi) return;
+      const start = Math.max(item.start, lo);
+      const end = Math.min(item.end, hi);
+      const width = 100 * (end - start) / (hi - lo);
+      const label = width > 8 ? item.label : width > 3.6 ? item.shortLabel ?? item.label : '';
+      const cls = `segment c-${item.category}${label ? ' has-label' : ''}`;
+      const button = element(item.click ? 'button' : 'span', label, cls);
+      button.style.left = `${100 * (start - lo) / (hi - lo)}%`;
+      button.style.width = `${width}%`;
+      button.addEventListener('pointermove', event => tooltip(event, item.tooltip));
+      button.addEventListener('pointerleave', () => { byId('tip').hidden = true; });
+      button.title = item.tooltip;
+      if (item.click) {
+        button.type = 'button';
+        button.setAttribute('aria-label', item.tooltip);
+        if (item.selected) button.setAttribute('aria-pressed', 'true');
+        button.onclick = event => {
+          byId('tip').hidden = true;
+          item.click(event.detail === 0);
+        };
+      }
+      plot.append(button);
+    }
+
+    // Overlapping records get separate rows instead of hiding each other.
+    function plotIntervals(root, label, records, begin, end) {
+      const visible = records.filter(row => row.end > begin && row.start < end);
+      visible.sort((a, b) => a.start - b.start || b.end - a.end);
+      const plots = [plotLane(root, label)];
+      const until = [begin];
+      for (const row of visible) {
+        const start = Math.max(begin, row.start);
+        let index = until.findIndex(last => last <= start);
+        if (index === -1) {
+          index = plots.length;
+          plots.push(plotLane(root, ''));
+        }
+        block(plots[index], row, begin, end);
+        until[index] = row.end;
+      }
+    }
+
+    function clampWindow([begin, end], [low, high]) {
+      const span = Math.min(high - low, Math.max(1, end - begin));
+      const start = Math.max(low, Math.min(high - span, begin));
+      return [start, start + span];
+    }
+
+    function bindNavigation(root, scrollbar, update) {
+      let bounds, view, drag, pending;
+      let suppressClick = false;
+      let syncedScrollLeft = 0;
+      const fraction = (clientX, rect) => Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const plotRect = target => target.closest('.axis, .plot')?.getBoundingClientRect();
+
+      function syncScrollbar() {
+        scrollbar.hidden = !view;
+        if (!view) return;
+        const width = scrollbar.clientWidth;
+        const total = bounds[1] - bounds[0];
+        const visible = view[1] - view[0];
+        const travelTime = total - visible;
+        // Limit the virtual content width and map its scroll position proportionally.
+        const contentWidth = Math.max(width, Math.min(1e6, Math.ceil(width * total / visible)));
+        scrollbar.firstElementChild.style.width = `${contentWidth}px`;
+        const travelPixels = scrollbar.scrollWidth - width;
+        scrollbar.scrollLeft = travelTime > 0 ? travelPixels * (view[0] - bounds[0]) / travelTime : 0;
+        syncedScrollLeft = scrollbar.scrollLeft;
+      }
+
+      function navigate(next) {
+        view = clampWindow(next, bounds);
+        update(view);
+      }
+
+      function zoom(scale, ratio) {
+        const [begin, end] = view;
+        const anchor = begin + ratio * (end - begin);
+        schedule([anchor + (begin - anchor) * scale, anchor + (end - anchor) * scale]);
+      }
+
+      function schedule(next) {
+        view = clampWindow(next, bounds);
+        if (pending !== undefined) return;
+        pending = requestAnimationFrame(() => {
+          pending = undefined;
+          update(view);
+        });
+      }
+
+      scrollbar.addEventListener('scroll', () => {
+        const offset = scrollbar.scrollLeft;
+        // The browser rounds scrollLeft. Keep the requested view when reflecting it into the bar.
+        if (!view || offset === syncedScrollLeft) return;
+        const maxScroll = scrollbar.scrollWidth - scrollbar.clientWidth;
+        if (maxScroll <= 0) return;
+        const visible = view[1] - view[0];
+        const travelTime = bounds[1] - bounds[0] - visible;
+        const start = bounds[0] + travelTime * offset / maxScroll;
+        schedule([start, start + visible]);
+      });
+      new ResizeObserver(syncScrollbar).observe(scrollbar);
+
+      root.addEventListener('wheel', event => {
+        const rect = plotRect(event.target);
+        if (!rect?.width || !view || drag || !(event.deltaX || event.deltaY)) return;
+        event.preventDefault();
+        byId('tip').hidden = true;
+        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.width : 1;
+        if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+          const [begin, end] = view;
+          const shift = (end - begin) * event.deltaX * unit / rect.width;
+          schedule([begin + shift, end + shift]);
+          return;
+        }
+        const pixels = event.deltaY * unit;
+        const scale = Math.exp(Math.max(-3, Math.min(3, pixels / 350)));
+        zoom(scale, fraction(event.clientX, rect));
+      }, {passive: false});
+
+      root.addEventListener('keydown', event => {
+        if (event.target !== root || !view || event.altKey || event.ctrlKey || event.metaKey) return;
+        if (['+', '=', '-', '−'].includes(event.key)) {
+          event.preventDefault();
+          zoom(event.key === '-' || event.key === '−' ? 1.3 : 1 / 1.3, .5);
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+          event.preventDefault();
+          const [begin, end] = view;
+          const shift = (end - begin) * (event.key === 'ArrowRight' ? .2 : -.2);
+          schedule([begin + shift, end + shift]);
+        }
+      });
+
+      root.addEventListener('pointerdown', event => {
+        if (!event.isPrimary || event.button !== 0 || event.pointerType !== 'mouse') return;
+        suppressClick = false;
+        const rect = plotRect(event.target);
+        if (!rect?.width || !view) return;
+        drag = {id: event.pointerId, start: event.clientX, rect, initial: view, select: event.shiftKey, moved: false};
+      });
+
+      function moveDrag(event) {
+        const delta = event.clientX - drag.start;
+        if (!drag.moved) {
+          if (Math.abs(delta) < 4) return;
+          drag.moved = true;
+          suppressClick = true;
+          byId('tip').hidden = true;
+          root.focus({preventScroll: true});
+          root.classList.add(drag.select ? 'selecting' : 'panning');
+          root.setPointerCapture(event.pointerId);
+        }
+        const [begin, end] = drag.initial;
+        if (!drag.select) {
+          const shift = (end - begin) * delta / drag.rect.width;
+          schedule([begin - shift, end - shift]);
+          return;
+        }
+        const next = [drag.start, event.clientX].map(x => fraction(x, drag.rect)).sort((a, b) => a - b);
+        drag.selection = next.map(x => begin + x * (end - begin));
+        if (!drag.overlay) {
+          drag.overlay = element('div', undefined, 'zoom-selection');
+          drag.overlay.setAttribute('aria-hidden', 'true');
+          root.append(drag.overlay);
+        }
+        drag.overlay.style.left = `${drag.rect.left - root.getBoundingClientRect().left + drag.rect.width * next[0]}px`;
+        drag.overlay.style.width = `${drag.rect.width * (next[1] - next[0])}px`;
+      }
+
+      window.addEventListener('pointermove', event => {
+        if (drag?.id === event.pointerId) moveDrag(event);
+      });
+
+      function finish(event) {
+        if (drag?.id !== event.pointerId) return;
+        const selection = event.type === 'pointerup' ? drag.selection : null;
+        drag.overlay?.remove();
+        drag = null;
+        root.classList.remove('selecting', 'panning');
+        if (selection && selection[0] < selection[1]) navigate(selection);
+      }
+
+      window.addEventListener('pointerup', finish);
+      window.addEventListener('pointercancel', finish);
+      root.addEventListener('lostpointercapture', finish);
+      root.addEventListener('click', event => {
+        if (!suppressClick || event.detail === 0) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, {capture: true});
+
+      return (range, current) => {
+        // An explicit window change, such as a reset, supersedes a queued gesture.
+        if (pending !== undefined) {
+          cancelAnimationFrame(pending);
+          pending = undefined;
+        }
+        bounds = range;
+        view = current;
+        syncScrollbar();
+      };
+    }
+
+    const defaults = data.default ?? {};
+    const defaultFrame = data.frames.find(frame =>
+      str(frame.lane) === str(defaults.lane) && str(frame.track) === str(defaults.track) && key(frame) === str(defaults.key)
+    ) ?? data.frames.find(frame => frame.groups.length) ?? data.frames[0];
+    const selectedTracks = new Map(data.lanes.map(lane => [str(lane.id), str(lane.tracks[0]?.id)]));
+    if (defaultFrame) selectedTracks.set(str(defaultFrame.lane), str(defaultFrame.track));
+    const state = {
+      scope: 'steady', reference: defaultFrame ? key(defaultFrame) : null, frame: defaultFrame,
+      group: Number.isInteger(defaults.group) ? defaults.group : 0, stage: null,
+      overviewWindow: null, detailWindow: null,
+    };
+
+    const syncOverview = bindNavigation(byId('overviewPlot'), byId('overviewScrollbar'), range => {
+      state.overviewWindow = range;
+      drawOverview();
+    });
+    const syncDetail = bindNavigation(byId('stagePlot'), byId('stageScrollbar'), range => {
+      state.detailWindow = range;
+      drawDetail(false);
+    });
+
+    function currentTrackFrames(lane) {
+      return (framesByLane.get(lane) ?? []).filter(frame => str(frame.track) === selectedTracks.get(lane));
+    }
+
+    function setFrame(frame, group) {
+      if (!frame) return;
+      state.frame = frame;
+      state.group = group ?? 0;
+      state.stage = null;
+      state.detailWindow = null;
+    }
+
+    function pickFrame(frame, group, focus) {
+      setFrame(frame, group);
+      render();
+      if (focus) byId('layer').focus();
+    }
+
+    function frameInLane(lane, reference) {
+      const frames = currentTrackFrames(lane);
+      return frames.find(frame => key(frame) === reference) ?? (framesByLane.get(lane) ?? []).find(frame => key(frame) === reference);
+    }
+
+    function switchTrack(lane, track) {
+      selectedTracks.set(lane, track);
+      if (str(state.frame.lane) === lane) {
+        const onTrack = currentTrackFrames(lane);
+        setFrame(onTrack.find(frame => key(frame) === key(state.frame)) ?? onTrack[0]);
+      }
+      render();
+      [...byId('overviewPlot').querySelectorAll('select')].find(select => select.dataset.lane === lane)?.focus();
+    }
+
+    function selectForLane(lane) {
+      const id = str(lane.id);
+      if (lane.tracks.length < 2) return '范围 / 交接';
+      const select = element('select');
+      select.dataset.lane = id;
+      select.setAttribute('aria-label', `${lane.label} 轨道`);
+      setOptions(select, lane.tracks.map(track => [str(track.id), track.label]), selectedTracks.get(id));
+      select.onchange = () => switchTrack(id, select.value);
+      return select;
+    }
+
+    function drawOverview() {
+      const root = byId('overviewPlot');
+      const sameFrame = data.frames.filter(frame => key(frame) === state.reference);
+      let [low, high] = data.time;
+      let [begin, end] = data.time;
+      const ref = frameInLane(str(defaultFrame.lane), state.reference) ?? sameFrame[0];
+      if (state.scope === 'steady' && ref) [begin, end] = [ref.begin_ns, ref.end_ns];
+      if (state.scope === 'follow' && sameFrame.length) {
+        begin = low = Math.min(...sameFrame.map(frame => frame.begin_ns));
+        end = high = Math.max(...sameFrame.map(frame => frame.end_ns));
+      }
+      const bounds = [low, Math.max(high, low + 1)];
+      [begin, end] = clampWindow(state.overviewWindow ?? [begin, end], bounds);
+      syncOverview(bounds, [begin, end]);
+      root.replaceChildren();
+      axis(root, begin, end);
+      const used = new Set();
+      for (const [id, lane] of lanes) {
+        const frameBars = [];
+        const items = [];
+        for (const frame of currentTrackFrames(id)) {
+          if (frame.end_ns <= begin || frame.begin_ns >= end || (state.scope === 'follow' && key(frame) !== state.reference)) continue;
+          const prefix = `${lane.label} · ${frame.label}`;
+          const frameCategory = frame.observed === false ? 'unframed' : 'frame';
+          used.add(frameCategory);
+          frameBars.push({
+            start: frame.begin_ns, end: frame.end_ns, category: frameCategory, label: frame.label,
+            tooltip: `${prefix} · ${frame.observed === false ? '记录覆盖 ' : ''}${fmt(frame.end_ns - frame.begin_ns)} ms`,
+            click: focus => pickFrame(frame, undefined, focus), selected: frame === state.frame,
+          });
+          frame.groups.forEach((group, index) => {
+            const cls = category(group.category ?? 'layer');
+            used.add(cls);
+            items.push({
+              start: group.begin_ns, end: group.end_ns, category: cls, label: group.label,
+              tooltip: `${prefix} · ${group.label} · ${fmt(group.end_ns - group.begin_ns)} ms`,
+              click: focus => pickFrame(frame, index, focus), selected: frame === state.frame && state.group === index,
+            });
+          });
+          for (const marker of frame.markers ?? []) {
+            const cls = category(marker.category);
+            used.add(cls);
+            items.push({
+              start: marker.begin_ns, end: marker.end_ns, category: cls, label: marker.label,
+              tooltip: `${prefix} · ${marker.label} · ${fmt(marker.end_ns - marker.begin_ns)} ms`,
+            });
+          }
+        }
+        plotIntervals(root, lane.label, frameBars, begin, end);
+        plotIntervals(root, selectForLane(lane), items, begin, end);
+      }
+      const notes = {
+        steady: `以 ${lanes.get(str(ref?.lane))?.label ?? '参照轨道'} 的 ${ref?.label ?? '参照帧'} 为时间窗口。点击范围块查看阶段。`,
+        follow: '只显示参照帧在各轨道的记录。',
+        all: '显示完整采集窗口。',
+      };
+      byId('overviewNote').textContent = notes[state.scope];
+      byId('follow').disabled = !observedKeys.has(state.reference);
+      for (const mode of ['steady', 'follow', 'all']) byId(mode).setAttribute('aria-pressed', str(state.scope === mode));
+      drawLegend(byId('olegend'), used);
+    }
+
+    function showRecord(row, group) {
+      const [id, , offset, length, ref] = row;
+      const source = data.refs?.[ref];
+      const time = `范围内 ${fmt(offset, length)}–${fmt(offset + length, length)} ms（${fmt(length)} ms）`;
+      const absolute = `会话 ${fmt(group.begin_ns + offset, length)} ms`;
+      byId('detail').textContent = [phaseName(id), time, absolute, source && `原始记录 ${source}`].filter(Boolean).join(' · ');
+    }
+
+    function stageSummary(records) {
+      const summary = new Map();
+      for (const row of records) {
+        const [id, cls, , length] = row;
+        const key = `${id}:${cls}`;
+        if (!summary.has(key)) summary.set(key, {id, cls: category(cls), ns: 0, count: 0, longest: row});
+        const part = summary.get(key);
+        part.ns += length;
+        part.count++;
+        if (length > part.longest[3]) part.longest = row;
+      }
+      return summary;
+    }
+
+    function drawDetail(refreshPanel = true) {
+      const frame = state.frame;
+      const group = frame.groups[state.group] ?? frame.groups[0];
+      const root = byId('stagePlot');
+      const table = byId('rows');
+      const reset = byId('resetStage');
+      const lane = lanes.get(str(frame.lane));
+      const track = lane.tracks.find(track => str(track.id) === str(frame.track));
+      const label = [lane.label, frame.label, group?.label].filter(Boolean).join(' · ');
+      root.replaceChildren();
+      if (refreshPanel) {
+        byId('layerTitle').textContent = label;
+        table.replaceChildren();
+        byId('layer').disabled = !group;
+      }
+      reset.disabled = state.stage === null && state.detailWindow === null;
+      if (!group) {
+        syncDetail(null, null);
+        setOptions(byId('layer'), [], '');
+        byId('layerMeta').textContent = '这个帧没有可展开的阶段。';
+        byId('detail').textContent = '';
+        return;
+      }
+      state.group = frame.groups.indexOf(group);
+      const total = group.end_ns - group.begin_ns;
+      if (refreshPanel) {
+        setOptions(byId('layer'), frame.groups.map((part, index) => [index, part.label]), state.group);
+        const subject = group.source || track?.label;
+        byId('layerMeta').textContent = [`范围 ${fmt(total)} ms`, subject, `${group.records.length} 个软件区间`].filter(Boolean).join(' · ');
+      }
+      const summary = stageSummary(group.records);
+      const picked = summary.get(state.stage)?.longest;
+      let begin = 0;
+      let end = Math.max(total, 1);
+      if (picked) {
+        const [, , offset, length] = picked;
+        const padding = Math.max(length, total / 100, 1);
+        begin = Math.max(0, offset - padding);
+        end = Math.max(begin + 1, Math.min(total, offset + length + padding));
+        if (refreshPanel) showRecord(picked, group);
+      } else if (refreshPanel) {
+        byId('detail').textContent = group.records.length
+          ? '横轴为范围内相对时间。点击阶段名定位到最长片段，或点击色块查看原始记录。'
+          : '采集数据里没有此范围的细分阶段。';
+      }
+      const bounds = [0, Math.max(total, 1)];
+      [begin, end] = clampWindow(state.detailWindow ?? [begin, end], bounds);
+      syncDetail(bounds, [begin, end]);
+      axis(root, begin, end);
+      const byCategory = new Map();
+      for (const row of group.records) {
+        const [name, cls, offset, length] = row;
+        const color = category(cls);
+        if (!byCategory.has(color)) byCategory.set(color, []);
+        byCategory.get(color).push({
+          start: offset, end: offset + length, category: color, label: phaseName(name),
+          shortLabel: categories.get(color), tooltip: `${phaseName(name)} · ${fmt(length)} ms`,
+          click: () => showRecord(row, group), selected: row === picked,
+        });
+      }
+      for (const [color, label] of categories) {
+        if (byCategory.has(color)) plotIntervals(root, label, byCategory.get(color), begin, end);
+      }
+      if (!refreshPanel) return;
+      for (const [id, stage] of [...summary].sort((a, b) => b[1].ns - a[1].ns)) {
+        const row = element('tr');
+        const cell = element('td');
+        const select = element('button', phaseName(stage.id), 'stage-select');
+        select.type = 'button';
+        select.title = data.names[stage.id];
+        select.dataset.stage = id;
+        select.prepend(element('i', undefined, `dot c-${stage.cls}`));
+        select.setAttribute('aria-pressed', str(state.stage === id));
+        select.onclick = event => {
+          state.stage = state.stage === id ? null : id;
+          state.detailWindow = null;
+          drawDetail();
+          if (event.detail === 0) [...table.querySelectorAll('button')].find(button => button.dataset.stage === id)?.focus();
+        };
+        cell.append(select);
+        row.append(cell, element('td', fmt(stage.ns), 'num'), element('td', str(stage.count), 'num'));
+        table.append(row);
+      }
+    }
+
+    function render() {
+      drawOverview();
+      drawDetail();
+    }
+
+    byId('title').textContent = data.title || 'LXTrace · 流水线';
+    document.title = data.title ? `LXTrace · ${data.title}` : 'LXTrace · 流水线';
+    byId('notices').append(...(data.notices ?? []).map(note => element('p', note)));
+    const count = data.counts ?? {};
+    const origin = data.origin ? ` · ${data.origin}` : '';
+    const number = value => Number(value).toLocaleString('en-US');
+    const observedFrames = data.frames.filter(frame => frame.observed !== false).length;
+    byId('sourceLabel').textContent = `LXTrace ${data.run ?? ''}${origin} · ${number(count.intervals ?? 0)} 个软件区间 · ${number(observedFrames)} 个实测帧区间`;
+    if (defaultFrame) {
+      setOptions(byId('frame'), [...frameOptions], state.reference);
+      byId('frame').onchange = event => {
+        state.reference = event.target.value;
+        state.overviewWindow = null;
+        if (state.scope === 'follow' && !observedKeys.has(state.reference)) state.scope = 'steady';
+        const frame = frameInLane(str(state.frame.lane), state.reference) ?? data.frames.find(frame => key(frame) === state.reference);
+        if (frame) {
+          selectedTracks.set(str(frame.lane), str(frame.track));
+          pickFrame(frame, state.group);
+        }
+      };
+      for (const mode of ['steady', 'follow', 'all']) {
+        byId(mode).onclick = () => {
+          state.scope = mode;
+          state.overviewWindow = null;
+          if (mode === 'follow' && key(state.frame) !== state.reference) {
+            const frame = frameInLane(str(state.frame.lane), state.reference) ?? data.frames.find(frame => key(frame) === state.reference);
+            if (frame) selectedTracks.set(str(frame.lane), str(frame.track));
+            setFrame(frame, state.group);
+          }
+          render();
+        };
+      }
+      byId('layer').onchange = event => pickFrame(state.frame, Number(event.target.value));
+      byId('resetStage').onclick = () => {
+        state.stage = null;
+        state.detailWindow = null;
+        drawDetail();
+      };
+      render();
+    } else {
+      for (const id of ['steady', 'all', 'follow', 'frame', 'layer', 'resetStage']) byId(id).disabled = true;
+      syncOverview(null, null);
+      syncDetail(null, null);
+      byId('overviewNote').textContent = '这个会话没有已标注的帧。';
+    }
+  </script>
+</body>
+</html>

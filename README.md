@@ -228,7 +228,9 @@ SDK 会校验参数 JSON；非法参数以 `invalid_args` 标记替代并计错�
 
 直接用浏览器打开 `record` 默认生成的 `session.html`、`pmu.html`，或 `--html` 指定的文件。这些文件是自包含报告，可以复制到开发工作站离线查看，无需启动网页服务。
 
-报告图形由软件固定模板自动生成，`record`、`report` 和 `export --format html` 共用同一套实现，无需另写绘图脚本。`web/index.html` 定义报告页面与控件，`web/timeline.js` 负责流水线／类别轨道布局及配色，`web/viewer.js` 负责加载会话、绘制时间线和缩放、筛选、选区、搜索等交互。导出时将这些资源与会话数据内嵌到 HTML，单进程和同节点多 rank 使用一致的视图与解释规则。
+默认资源报告由内置模板自动生成。`record`、`report` 和 `export --format html` 都可生成此报告。`web/index.html` 定义页面与控件，`web/timeline.js` 负责轨道布局和配色，`web/viewer.js` 提供缩放、筛选、选区和搜索。导出时将资源与会话数据内嵌到 HTML。
+
+需要从流水线总览下钻到帧和操作时，使用 `--view pipeline`。该视图统一使用内置的 `web/pipeline.html`，采集完成后可自动生成，也可从已有数据重导。帧、层、算子和等待的展示依据采集记录，适用的证据范围随会话而定。
 
 1. 先确认会话来源与证据类型。`LIVE` 表示本工具采集，`IMPORTED` 表示导入，`SYNTHETIC` 表示合成数据。
 2. 选择资源或软件线程；使用时间输入框或拖动框选确定分析区间。
@@ -270,6 +272,22 @@ python3 -m lxtrace report /path/to/same-run-sessions \
 python3 -m lxtrace report /path/to/rank0.lxtrace /path/to/rank1.lxtrace \
   --output "$run_dir/ranks.html" --session-output "$run_dir/ranks.lxtrace"
 ```
+
+对于已有追踪，使用同一条命令生成流水线视图。输入可为原生 `.lxtrace` 会话、历史 v1 会话、Compact `.lxc` 文件，或符合下方时钟与运行约束的同轮输入。
+
+```sh
+python3 -m lxtrace report "$run_dir/session.lxtrace" \
+  --view pipeline --output "$run_dir/pipeline.html"
+```
+
+需要在采集结束后直接生成相同样式时，在原 `record` 命令的 `--` 分隔符前加 `--view pipeline`。
+
+```sh
+python3 -m lxtrace record --profile basic --view pipeline \
+  --output "$run_dir/session.lxtrace" --html "$run_dir/pipeline.html" -- ./my_inference
+```
+
+页面为自包含 HTML，由程序读取数据并填入模板。选中一帧或一个层块可查看记录到的操作区间。只有外层打点的会话只能展示外层边界。阶段时长是软件区间，含其边界内发生的等待。
 
 软件多进程汇集要求输入具有可比较的同主机、同 boot `CLOCK_MONOTONIC` 时钟身份与明确的运行归属。存在不同 `run_id` 时，工具会要求使用 `--run-id explicit-group` 显式声明分组；旧会话缺少运行身份时也必须提供该参数。分组声明不会校正时钟，未经校时的多节点输入仍会拒绝处理。报告不通过帧号或屏障对齐，也不会把不同配置、不同运行的数据默认视为同次执行。
 

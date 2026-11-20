@@ -518,7 +518,16 @@ def merge_sessions(paths, run_id=None, model=None):
     return resource.validate_session(result)
 
 
-def write_unified_report(inputs, output, session_output=None, run_id=None, model=None):
+def write_view(session, output, view='resource'):
+    if view == 'resource':
+        return resource.write_report(session, output, overwrite=False)
+    if view == 'pipeline':
+        from .pipeline import write_report
+        return write_report(session, output)
+    raise ValueError('unknown report view: ' + str(view))
+
+
+def write_unified_report(inputs, output, session_output=None, run_id=None, model=None, view='resource'):
     """Write the fixed web viewer and optionally a new JSON/native session.
 
     Inputs and existing outputs are never overwritten. The function does not
@@ -549,5 +558,5 @@ def write_unified_report(inputs, output, session_output=None, run_id=None, model
     session = merge_sessions(inputs, run_id=run_id, model=model)
     if session_path is not None:
         resource.write_session(session, session_path)
-    resource.write_report(session, output, overwrite=False)
+    write_view(session, output, view)
     return session

@@ -55,7 +55,7 @@ def _read_meta(content):
     return {}
 
 
-def record_software(output, program, html=None, duration=None, compact=False):
+def record_software(output, program, html=None, duration=None, compact=False, view='resource'):
     """Return (native_v2_session, business_exit_code), always exporting HTML.
 
     Each process inherits a run UUID and an SDK output template containing %p.
@@ -79,7 +79,8 @@ def record_software(output, program, html=None, duration=None, compact=False):
         raise ValueError("output parent contains reserved SDK template token %p; choose another directory")
     from .collector import doctor
     from .importers import load_sdk
-    from .resource import write_report, write_session
+    from .report import write_view
+    from .resource import write_session
     out.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex
@@ -252,7 +253,7 @@ def record_software(output, program, html=None, duration=None, compact=False):
         if out.exists() or report_path.exists():
             raise ValueError("output or HTML appeared during capture; evidence retained in " + str(capture_dir))
         write_session(merged, out)
-        write_report(merged, report_path, overwrite=False)
+        write_view(merged, report_path, view)
     except Exception as error:
         manifest.update(status="report_failed", error=str(error))
         _write_json(manifest_path, manifest)

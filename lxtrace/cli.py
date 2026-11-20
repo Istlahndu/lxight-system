@@ -96,6 +96,7 @@ def make_parser():
     q.add_argument('--job'); q.add_argument('--attach', type=int)
     q.add_argument('--duration', type=timestamp); q.add_argument('--output', required=True)
     q.add_argument('--html', help='HTML report path; defaults to the output stem plus .html')
+    q.add_argument('--view', choices=['resource', 'pipeline'], default='resource', help='HTML report layout')
     q.add_argument('program', nargs=argparse.REMAINDER)
     q = c.add_parser('demo', help='generate labeled synthetic resource fixtures')
     q.add_argument('--case', choices=['resource','parallel','serial','loss','aggregate','sparse','open','counters','uncalibrated'], default='resource')
@@ -114,9 +115,10 @@ def make_parser():
     q = c.add_parser('export'); q.add_argument('session')
     q.add_argument('--format', choices=['html','chrome-trace','json','csv'], required=True)
     q.add_argument('--output', required=True)
-    q = c.add_parser('report', help='generate one unified pipeline HTML from a session or same-node rank sessions')
-    q.add_argument('inputs', nargs='+', help='v1/v2 sessions, SDK JSONL, GFTRACE1/2 binary, or a directory containing sessions')
+    q = c.add_parser('report', help='generate standalone HTML from a session or same-node rank sessions')
+    q.add_argument('inputs', nargs='+', help='v1/v2 sessions, SDK JSONL, Compact, GFTRACE1/2, or a directory containing sessions')
     q.add_argument('--output', required=True, help='self-contained HTML report')
+    q.add_argument('--view', choices=['resource', 'pipeline'], default='resource', help='HTML report layout')
     q.add_argument('--session-output', help='also save the merged native .lxtrace archive or JSON')
     q.add_argument('--run-id', help='explicit run grouping for older sessions without a shared run ID')
     q.add_argument('--model', help='model plugin name or JSON path, applied only to original GFTRACE inputs')
@@ -184,19 +186,21 @@ def main(argv=None):
                     raise ValueError('basic launches an explicit SDK-enabled program; --attach/--config/--job are unsupported')
                 from .software import record_software
                 session, code = record_software(args.output, program, str(html), args.duration,
-                                                **({'compact': True} if args.profile == 'compact' else {}))
+                                                compact=args.profile == 'compact', view=args.view)
             else:
                 from .collector import record_external
+                from .report import write_view
                 config = json.loads(Path(args.config).read_text(encoding='utf-8-sig')) if args.config else None
                 session, code = record_external(args.output, program or None, args.attach, args.duration,
                                           'resource' if args.profile == 'schedule' else args.profile, config, args.job)
-                R.write_report(session, html, overwrite=False)
+                write_view(session, html, args.view)
             business_exit = session.get('capture',{}).get('exit_code')
             print('session='+str(args.output)+' html='+str(html)+' business_exit='+str(business_exit))
             return code if code >= 0 else 1
         elif args.command == 'report':
             from .report import write_unified_report
-            session = write_unified_report(args.inputs, args.output, args.session_output, args.run_id, model=args.model)
+            session = write_unified_report(args.inputs, args.output, args.session_output, args.run_id,
+                                           model=args.model, view=args.view)
             print('records='+str(len(session['records']))+' html='+str(args.output))
         elif args.command == 'production-report':
             from .attribution.workflow import run_report
